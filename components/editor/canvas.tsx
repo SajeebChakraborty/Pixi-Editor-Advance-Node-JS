@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import * as fabric from "fabric";
 import { useEditorStore, Layer, EditorPage } from "@/lib/store";
 import { Plus, Trash2, Copy, Minus, LayoutGrid } from "lucide-react";
@@ -525,13 +525,257 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       endTime,
       playbackRate,
       duration,
+      isMuted,
+      volume,
     },
     setVideoState,
   } = useEditorStore();
 
-  const getPageLayers = () => {
-    return pages.find((p: EditorPage) => p.id === pageId)?.layers || [];
-  };
+  const playbackTimeRef = useRef(currentTime ?? 0);
+  const lastCommittedPlaybackTimeRef = useRef(currentTime ?? 0);
+
+  const drawVideoFrame = useCallback((obj: any, videoEl: HTMLVideoElement) => {
+    const videoFrameCanvas = obj._videoFrameCanvas as HTMLCanvasElement | undefined;
+    const videoFrameCtx = obj._videoFrameCtx as CanvasRenderingContext2D | null | undefined;
+    if (!videoFrameCanvas || !videoFrameCtx || videoEl.readyState < 2) return false;
+
+    try {
+      videoFrameCtx.clearRect(0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
+      videoFrameCtx.drawImage(videoEl, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
+      obj.dirty = true;
+      return true;
+    } catch {
+      return false;
+    }
+  }, []);
+
+  const drawVideoFrameForPlayback = useCallback(
+    (obj: any, videoEl: HTMLVideoElement) => {
+      const now = performance.now();
+      const lastDrawAt = Number(obj._lastVideoPreviewDrawAt || 0);
+      if (now - lastDrawAt < 33) return false;
+      if (!drawVideoFrame(obj, videoEl)) return false;
+      obj._lastVideoPreviewDrawAt = now;
+      return true;
+    },
+    [drawVideoFrame],
+  );
+
+  const syncTimedObjects = useCallback(
+    (
+      timelineTime: number,
+      options: { forceSeek?: boolean; allowPlayback?: boolean; drawFrame?: boolean } = {},
+    ) => {
+      const canvas = fabricCanvasRef.current;
+      if (!canvas) return false;
+
+      const layers = pages.find((p: EditorPage) => p.id === pageId)?.layers || [];
+      const currTime = Number.isFinite(timelineTime) ? timelineTime : 0;
+      let needsRender = false;
+
+      layers.forEach((layer: Layer) => {
+        const obj = canvas
+          .getObjects()
+          .find((o: any) => o.name === layer.objectId) as any;
+
+        if (!obj) return;
+
+        if (
+          layer.type === "video" &&
+          (obj.getElement || (obj as any)._videoEl)
+        ) {
+          const layerStart = layer.startTime ?? 0;
+          const layerDuration = layer.duration ?? 300;
+          const mediaStart = layer.mediaStart ?? 0;
+          const safeStart = isNaN(layerStart) ? 0 : layerStart;
+          const element = obj.getElement ? obj.getElement() : null;
+          const videoEl = ((obj as any)._videoEl ||
+            (element?.tagName === "VIDEO" ? element : null)) as HTMLVideoElement | null;
+          const safeDuration =
+            isNaN(layerDuration) || layerDuration <= 0
+              ? videoEl &&
+                  Number.isFinite(videoEl.duration) &&
+                  videoEl.duration > 0
+                ? videoEl.duration
+                : 300
+              : layerDuration;
+          const layerEnd = safeStart + safeDuration;
+          const shouldShow = currTime >= safeStart - 0.5 && currTime < layerEnd;
+
+          if (!videoEl) return;
+
+          videoEl.muted = isMuted;
+          videoEl.volume = isMuted ? 0 : Math.min(1, Math.max(0, volume ?? 1));
+          videoEl.playbackRate = playbackRate || 1;
+
+          if (shouldShow) {
+            const targetTime = mediaStart + (currTime - safeStart);
+            const shouldSeek =
+              options.forceSeek ||
+              (!isPlaying &&
+                (!Number.isFinite(videoEl.currentTime) ||
+                  Math.abs(videoEl.currentTime - targetTime) > 0.04));
+
+            if (shouldSeek) {
+              try {
+                videoEl.currentTime = Math.max(0, targetTime);
+                needsRender = true;
+              } catch {
+                // Some codecs reject early seeks until more data is decoded.
+              }
+            }
+
+            if (options.allowPlayback !== false && isPlaying) {
+              if (videoEl.paused) videoEl.play().catch(() => {});
+            } else if (!videoEl.paused) {
+              videoEl.pause();
+            }
+
+            if (options.drawFrame !== false && drawVideoFrame(obj, videoEl)) {
+              needsRender = true;
+            }
+
+            if (!obj.visible) {
+              obj.visible = true;
+              obj.opacity = 1;
+              obj.dirty = true;
+              needsRender = true;
+            }
+          } else {
+            if (!videoEl.paused) videoEl.pause();
+            if (obj.visible) {
+              obj.visible = false;
+              obj.opacity = 0;
+              obj.dirty = true;
+              needsRender = true;
+            }
+          }
+          return;
+        }
+
+        const hasTimeData =
+          layer.startTime !== undefined && layer.duration !== undefined;
+        if (!hasTimeData) return;
+
+        const layerStart = layer.startTime!;
+        const layerDuration = layer.duration!;
+        if (isNaN(layerStart) || isNaN(layerDuration) || layerDuration <= 0)
+          return;
+
+        const layerEnd = layerStart + layerDuration;
+        const shouldShow = currTime >= layerStart - 0.5 && currTime < layerEnd;
+
+        if (obj.visible !== shouldShow) {
+          obj.visible = shouldShow;
+          obj.opacity = shouldShow ? 1 : 0;
+          obj.dirty = true;
+          needsRender = true;
+        }
+      });
+
+      if (needsRender) {
+        canvas.requestRenderAll();
+      }
+
+      return needsRender;
+    },
+    [pages, pageId, isPlaying, isMuted, volume, playbackRate, drawVideoFrame],
+  );
+
+  useEffect(() => {
+    if (!isActive || !isPlaying) return;
+
+    const canvas = fabricCanvasRef.current;
+    if (!canvas) return;
+
+    let cancelled = false;
+    let rafId: number | null = null;
+    const callbackIds = new Map<HTMLVideoElement, number>();
+
+    const getActiveVideoObjects = () => {
+      const layers = pages.find((p: EditorPage) => p.id === pageId)?.layers || [];
+      return layers
+        .filter((layer: Layer) => layer.type === "video")
+        .map((layer: Layer) => {
+          const obj = canvas.getObjects().find((o: any) => o.name === layer.objectId) as any;
+          const element = obj?.getElement ? obj.getElement() : null;
+          const videoEl = (obj?._videoEl ||
+            (element?.tagName === "VIDEO" ? element : null)) as HTMLVideoElement | null;
+          return { obj, videoEl };
+        })
+        .filter(
+          (item): item is { obj: any; videoEl: HTMLVideoElement } =>
+            Boolean(item.obj && item.videoEl),
+        );
+    };
+
+    const scheduleVideoFrame = (obj: any, videoEl: HTMLVideoElement) => {
+      const requestFrame = (videoEl as any).requestVideoFrameCallback as
+        | ((callback: () => void) => number)
+        | undefined;
+      if (!requestFrame) return false;
+
+      const onFrame = () => {
+        if (cancelled) return;
+        if (obj.visible && drawVideoFrameForPlayback(obj, videoEl)) {
+          canvas.requestRenderAll();
+        }
+        const id = requestFrame.call(videoEl, onFrame);
+        callbackIds.set(videoEl, id);
+      };
+
+      const id = requestFrame.call(videoEl, onFrame);
+      callbackIds.set(videoEl, id);
+      return true;
+    };
+
+    const videoObjects = getActiveVideoObjects();
+    const usingVideoFrameCallbacks = videoObjects.some(({ obj, videoEl }) =>
+      scheduleVideoFrame(obj, videoEl),
+    );
+
+    if (!usingVideoFrameCallbacks) {
+      const renderLoop = () => {
+        if (cancelled) return;
+        let needsRender = false;
+        getActiveVideoObjects().forEach(({ obj, videoEl }) => {
+          if (obj.visible && drawVideoFrameForPlayback(obj, videoEl)) {
+            needsRender = true;
+          }
+        });
+        if (needsRender) canvas.requestRenderAll();
+        rafId = requestAnimationFrame(renderLoop);
+      };
+      rafId = requestAnimationFrame(renderLoop);
+    }
+
+    return () => {
+      cancelled = true;
+      if (rafId != null) cancelAnimationFrame(rafId);
+      callbackIds.forEach((id, videoEl) => {
+        const cancelFrame = (videoEl as any).cancelVideoFrameCallback as
+          | ((callbackId: number) => void)
+          | undefined;
+        if (cancelFrame) cancelFrame.call(videoEl, id);
+      });
+    };
+  }, [isActive, isPlaying, pages, pageId, drawVideoFrameForPlayback]);
+
+  useEffect(() => {
+    const incomingTime = currentTime ?? 0;
+    const isPlaybackCommit =
+      isPlaying &&
+      Math.abs(incomingTime - lastCommittedPlaybackTimeRef.current) < 0.02;
+
+    if (!isPlaybackCommit) {
+      playbackTimeRef.current = incomingTime;
+    }
+
+    syncTimedObjects(incomingTime, {
+      forceSeek: !isPlaybackCommit,
+      drawFrame: !isPlaybackCommit || !isPlaying,
+    });
+  }, [currentTime, isPlaying, syncTimedObjects]);
 
   // 1. Playback Loop (Master Clock)
   useEffect(() => {
@@ -539,25 +783,35 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     let animationFrameId: number;
     let lastTime = performance.now();
+    let lastUiCommit = 0;
+    playbackTimeRef.current =
+      useEditorStore.getState().videoState.currentTime ?? playbackTimeRef.current;
 
     const loop = () => {
       const now = performance.now();
       const dt = (now - lastTime) / 1000;
       lastTime = now;
 
-      const nextTime = currentTime + dt * playbackRate;
+      const nextTime = playbackTimeRef.current + dt * playbackRate;
 
       if (nextTime >= endTime) {
+        playbackTimeRef.current = startTime;
+        lastCommittedPlaybackTimeRef.current = startTime;
         setVideoState({ currentTime: startTime });
+        syncTimedObjects(startTime, { forceSeek: true, drawFrame: true });
       } else if (nextTime >= duration) {
+        playbackTimeRef.current = duration;
+        lastCommittedPlaybackTimeRef.current = duration;
         setVideoState({ isPlaying: false, currentTime: duration });
       } else {
-        setVideoState({ currentTime: nextTime });
-      }
+        playbackTimeRef.current = nextTime;
 
-      // Force render fabric canvas for smooth playback
-      if (fabricCanvasRef.current) {
-        fabricCanvasRef.current.requestRenderAll();
+        if (now - lastUiCommit >= 100) {
+          lastUiCommit = now;
+          lastCommittedPlaybackTimeRef.current = nextTime;
+          setVideoState({ currentTime: nextTime });
+          syncTimedObjects(nextTime, { drawFrame: false });
+        }
       }
 
       animationFrameId = requestAnimationFrame(loop);
@@ -568,129 +822,13 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   }, [
     isActive,
     isPlaying,
-    currentTime,
     duration,
     startTime,
     endTime,
     playbackRate,
     setVideoState,
+    syncTimedObjects,
   ]);
-
-  // 2. Sync Elements for THIS page (only handle what needs changing)
-  useEffect(() => {
-    if (!fabricCanvasRef.current) return;
-
-    const canvas = fabricCanvasRef.current;
-    const layers = getPageLayers();
-    const currTime = currentTime ?? 0;
-    let needsRender = false;
-
-    layers.forEach((layer: Layer) => {
-      const obj = canvas
-        .getObjects()
-        .find((o: any) => o.name === layer.objectId) as any;
-
-      if (!obj) return; // Object not yet on canvas (being added) — skip
-
-      // --- VIDEO LAYERS: Full sync (seek + play/pause + visibility) ---
-      if (
-        layer.type === "video" &&
-        (obj.getElement || (obj as any)._videoEl)
-      ) {
-        const layerStart = layer.startTime ?? 0;
-        const layerDuration = layer.duration ?? 300;
-        const mediaStart = layer.mediaStart ?? 0;
-        const safeStart = isNaN(layerStart) ? 0 : layerStart;
-        const element = obj.getElement ? obj.getElement() : null;
-        const videoEl = ((obj as any)._videoEl ||
-          (element?.tagName === "VIDEO" ? element : null)) as HTMLVideoElement | null;
-        const safeDuration =
-          isNaN(layerDuration) || layerDuration <= 0
-            ? videoEl &&
-                Number.isFinite(videoEl.duration) &&
-                videoEl.duration > 0
-              ? videoEl.duration
-              : 300
-            : layerDuration;
-        const layerEnd = safeStart + safeDuration;
-        // Use a generous 0.5s epsilon to prevent hiding objects that are effectively at the start
-        const shouldShow = currTime >= (safeStart - 0.5) && currTime < layerEnd;
-        const videoFrameCanvas = (obj as any)._videoFrameCanvas as HTMLCanvasElement | undefined;
-        const videoFrameCtx = (obj as any)._videoFrameCtx as CanvasRenderingContext2D | null | undefined;
-        if (!videoEl) return;
-
-        if (shouldShow) {
-          const offset = currTime - safeStart;
-          const targetTime = mediaStart + offset;
-          if (Math.abs(videoEl.currentTime - targetTime) > 0.3) {
-            videoEl.currentTime = targetTime;
-            needsRender = true; // Force canvas refresh after manual seek to avoid stale white frame.
-          }
-          if (isPlaying && videoEl.paused) videoEl.play().catch(() => { });
-          else if (!isPlaying && !videoEl.paused) videoEl.pause();
-
-          if (
-            videoFrameCanvas &&
-            videoFrameCtx &&
-            videoEl.readyState >= 2
-          ) {
-            try {
-              videoFrameCtx.clearRect(0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-              videoFrameCtx.drawImage(videoEl, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-              obj.dirty = true;
-              needsRender = true;
-            } catch {
-              // Ignore transient frame draw errors while seeking.
-            }
-          }
-
-          if (!obj.visible) {
-            obj.visible = true;
-            obj.opacity = 1;
-            obj.dirty = true;
-            needsRender = true;
-          }
-        } else {
-          if (!videoEl.paused) videoEl.pause();
-          if (obj.visible) {
-            obj.visible = false;
-            obj.opacity = 0;
-            obj.dirty = true;
-            needsRender = true;
-          }
-        }
-        return;
-      }
-
-      // --- NON-VIDEO LAYERS: Only hide if provably out of time range ---
-      // Do NOT touch objects that have no time data — they are always visible
-      const hasTimeData =
-        layer.startTime !== undefined && layer.duration !== undefined;
-      if (!hasTimeData) return; // no time metadata — always visible, skip
-
-      const layerStart = layer.startTime!;
-      const layerDuration = layer.duration!;
-      if (isNaN(layerStart) || isNaN(layerDuration) || layerDuration <= 0)
-        return; // invalid — skip
-
-      const layerEnd = layerStart + layerDuration;
-      // Use a generous 0.5s epsilon to avoid floating point race conditions hiding layers prematurely
-      const shouldShow = (currTime >= layerStart - 0.5) && (currTime < layerEnd);
-
-      if (obj.visible !== shouldShow) {
-        console.log(`[SYNC] Visibility for ${obj.name}: ${obj.visible} -> ${shouldShow}`);
-        obj.visible = shouldShow;
-        obj.opacity = shouldShow ? 1 : 0;
-        obj.dirty = true;
-        needsRender = true;
-      }
-    });
-
-    if (needsRender) {
-      console.log("[SYNC] Needs render...");
-      canvas.requestRenderAll();
-    }
-  }, [currentTime, isPlaying, pageId, pages]);
 
   return (
     <div className="flex flex-col items-center gap-6" suppressHydrationWarning>

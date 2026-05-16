@@ -5,7 +5,7 @@ import { FabricImage } from "fabric";
 import { useEditorStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, ChevronRight, Upload } from "lucide-react";
+import { Search, ChevronRight, Upload, X } from "lucide-react";
 import Image from "next/image";
 
 import { AssetService } from "@/lib/asset-service";
@@ -14,7 +14,7 @@ import { toast } from "sonner";
 
 export function ImageTool() {
   const [search, setSearch] = useState("");
-  const { canvas, addLayer, recentAssets } = useEditorStore();
+  const { recentAssets, deleteLayer, getLayers } = useEditorStore();
   const [categories, setCategories] = useState<
     { name: string; items: any[] }[]
   >([]);
@@ -129,6 +129,26 @@ export function ImageTool() {
     }
   };
 
+  const removeRecentImageFromCanvas = (
+    e: React.MouseEvent<HTMLButtonElement>,
+    url: string,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const matchingLayer = [...getLayers()]
+      .reverse()
+      .find((layer) => layer.type === "image" && layer.data?.url === url);
+
+    if (!matchingLayer) {
+      toast.info("This image is not on the active canvas.");
+      return;
+    }
+
+    deleteLayer(matchingLayer.id);
+    toast.success("Photo removed from canvas.");
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#161616]">
       {/* Header with Search */}
@@ -206,6 +226,15 @@ export function ImageTool() {
                     onClick={() => addImage(item.url, item.name)}
                     className="group relative h-24 rounded-lg overflow-hidden cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
                   >
+                    <button
+                      type="button"
+                      onClick={(e) => removeRecentImageFromCanvas(e, item.url)}
+                      title="Remove from canvas"
+                      aria-label="Remove photo from canvas"
+                      className="absolute right-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-600 text-white opacity-0 shadow-lg shadow-black/40 transition-all hover:bg-red-500 group-hover:opacity-100"
+                    >
+                      <X className="h-4 w-4 stroke-[3]" />
+                    </button>
                     <Image
                       src={item.url}
                       alt={item.name}

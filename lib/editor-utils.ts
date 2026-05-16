@@ -54,7 +54,11 @@ export const addMediaFromUrl = async (
     if (!silent) addRecentAsset({ url, name: "Recent Video", type: "video" });
     const videoEl = document.createElement("video");
     videoEl.preload = "auto";
-    videoEl.muted = true;
+    videoEl.muted = Boolean(videoState?.isMuted);
+    videoEl.volume = videoState?.isMuted
+      ? 0
+      : Math.min(1, Math.max(0, Number(videoState?.volume ?? 1)));
+    videoEl.playbackRate = Number(videoState?.playbackRate || 1);
     videoEl.playsInline = true;
 
     const buildProxyUrl = (targetUrl: string) => {
@@ -192,25 +196,33 @@ export const addMediaFromUrl = async (
     const objectId = forceObjectId || `vid_${Date.now()}`;
     const vWidth = videoEl.videoWidth || 1280;
     const vHeight = videoEl.videoHeight || 720;
+    const previewScale = Math.min(
+      1,
+      (baseWidth * 0.8) / vWidth,
+      (baseHeight * 0.8) / vHeight,
+      1280 / Math.max(vWidth, vHeight),
+    ) || 1;
+    const frameWidth = Math.max(1, Math.round(vWidth * previewScale));
+    const frameHeight = Math.max(1, Math.round(vHeight * previewScale));
     // Render through an intermediate canvas for stable cross-browser frame painting in Fabric.
     const frameCanvas = document.createElement("canvas");
-    frameCanvas.width = vWidth;
-    frameCanvas.height = vHeight;
+    frameCanvas.width = frameWidth;
+    frameCanvas.height = frameHeight;
     const frameCtx = frameCanvas.getContext("2d");
     if (frameCtx) {
       try {
-        frameCtx.drawImage(videoEl, 0, 0, vWidth, vHeight);
+        frameCtx.drawImage(videoEl, 0, 0, frameWidth, frameHeight);
       } catch {
         // Ignore first-frame draw failures; sync loop will draw again when ready.
       }
     }
-    const scale = Math.min((baseWidth * 0.8) / vWidth, (baseHeight * 0.8) / vHeight) || 1;
+    const scale = Math.min((baseWidth * 0.8) / frameWidth, (baseHeight * 0.8) / frameHeight) || 1;
 
     const fabricVideo = new fabric.FabricImage(frameCanvas, { 
-      left: (baseWidth - vWidth * scale) / 2, 
-      top: (baseHeight - vHeight * scale) / 2, 
-      width: vWidth,
-      height: vHeight,
+      left: (baseWidth - frameWidth * scale) / 2,
+      top: (baseHeight - frameHeight * scale) / 2,
+      width: frameWidth,
+      height: frameHeight,
       scaleX: scale, 
       scaleY: scale,
       name: objectId,

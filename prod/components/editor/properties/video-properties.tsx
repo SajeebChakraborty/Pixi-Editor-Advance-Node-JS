@@ -1,17 +1,19 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
 import { FabricImage } from "fabric";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
-import { Play, Pause, Volume2, VolumeX, FastForward } from "lucide-react";
+import { Play, Pause, Volume2, VolumeX } from "lucide-react";
+import { useEditorStore } from "@/lib/store";
 
 interface VideoPropertiesProps {
   selectedObject: FabricImage;
 }
 
 export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
+  const { setVideoState } = useEditorStore();
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const [speed, setSpeed] = useState(1);
@@ -23,7 +25,9 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   const [trimStart, setTrimStart] = useState(0);
   const [trimEnd, setTrimEnd] = useState(0);
 
-  const videoEl = selectedObject.getElement() as HTMLVideoElement;
+  const element = selectedObject.getElement();
+  const videoEl = ((selectedObject as any)._videoEl ||
+    (element?.tagName === "VIDEO" ? element : null)) as HTMLVideoElement | null;
 
   useEffect(() => {
     if (!videoEl) return;
@@ -65,23 +69,32 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   }, [selectedObject, videoEl]);
 
   const togglePlay = () => {
+    if (!videoEl) return;
     if (isPlaying) videoEl.pause();
     else videoEl.play();
+    setVideoState({ isPlaying: !isPlaying });
   };
 
   const handleSeek = (val: number) => {
+    if (!videoEl) return;
     videoEl.currentTime = val;
     setCurrentTime(val);
+    setVideoState({ currentTime: val });
   };
 
   const handleVolume = (val: number) => {
+    if (!videoEl) return;
     videoEl.volume = val;
+    videoEl.muted = val === 0;
     setVolume(val);
+    setVideoState({ volume: val, isMuted: val === 0 });
   };
 
   const handleSpeed = (val: number) => {
+    if (!videoEl) return;
     videoEl.playbackRate = val;
     setSpeed(val);
+    setVideoState({ playbackRate: val });
   };
 
   const handleOpacity = (val: number) => {

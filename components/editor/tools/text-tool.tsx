@@ -54,60 +54,6 @@ export function TextTool() {
     requestAnimationFrame(() => fabricCanvas.requestRenderAll());
   };
 
-  const textStyles = [
-    {
-      category: "Sans Serif",
-      items: [
-        {
-          label: "Inter",
-          font: "Inter",
-          weight: "bold",
-          preview: "Modern & Clean",
-        },
-        {
-          label: "Roboto",
-          font: "Roboto",
-          weight: "normal",
-          preview: "Standard Web",
-        },
-      ],
-    },
-    {
-      category: "Serif",
-      items: [
-        {
-          label: "Playfair Display",
-          font: "Playfair Display",
-          weight: "bold",
-          preview: "Elegant & Classic",
-        },
-        {
-          label: "Merriweather",
-          font: "Merriweather",
-          weight: "normal",
-          preview: "Editorial",
-        },
-      ],
-    },
-    {
-      category: "Display",
-      items: [
-        {
-          label: "Oswald",
-          font: "Oswald",
-          weight: "bold",
-          preview: "Strong Impact",
-        },
-        {
-          label: "Lobster",
-          font: "Lobster",
-          weight: "normal",
-          preview: "Playful Script",
-        },
-      ],
-    },
-  ];
-
   return (
     <div className="flex flex-col h-full bg-[#161616]">
       <div className="px-5 py-6 space-y-6">
