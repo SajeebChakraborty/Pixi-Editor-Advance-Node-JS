@@ -1,0 +1,94 @@
+{
+  "name": "Corporate Footer",
+  "description": "A dark themed professional footer with copyright areas and social placeholders.",
+  "category": "web",
+  "width": 1920,
+  "height": 400,
+  "layers": [
+    {
+      "id": "f-bg-1",
+      "type": "shape",
+      "name": "Footer BG",
+      "locked": true,
+      "properties": {
+        "fill": "#111827",
+        "width": 1920,
+        "height": 400,
+        "left": 0,
+        "top": 0
+      }
+    },
+    {
+      "id": "f-line-1",
+      "type": "shape",
+      "name": "Divider Line",
+      "locked": true,
+      "properties": {
+        "fill": "#374151",
+        "width": 1760,
+        "height": 1,
+        "left": 80,
+        "top": 80
+      }
+    },
+    {
+      "id": "f-logo-1",
+      "type": "image",
+      "name": "Footer Logo",
+      "locked": false,
+      "isPlaceholder": true,
+      "properties": {
+        "left": 80,
+        "top": 140,
+        "width": 120,
+        "height": 60,
+        "fill": "#374151"
+      }
+    },
+    {
+      "id": "f-copy-1",
+      "type": "text",
+      "name": "Copyright",
+      "locked": false,
+      "properties": {
+        "left": 80,
+        "top": 320,
+        "text": "© 2026 PIXIGEN. ALL RIGHTS RESERVED.",
+        "fontSize": 14,
+        "fontFamily": "Inter",
+        "fontWeight": "medium",
+        "fill": "#9ca3af"
+      }
+    },
+    {
+      "id": "f-links-head-1",
+      "type": "text",
+      "name": "Links Header",
+      "locked": false,
+      "properties": {
+        "left": 1400,
+        "top": 140,
+        "text": "QUICK LINKS",
+        "fontSize": 16,
+        "fontFamily": "Inter",
+        "fontWeight": "black",
+        "fill": "#ffffff"
+      }
+    },
+    {
+      "id": "f-link-1",
+      "type": "text",
+      "name": "Link 1",
+      "locked": false,
+      "properties": {
+        "left": 1400,
+        "top": 180,
+        "text": "Privacy Policy",
+        "fontSize": 14,
+        "fontFamily": "Inter",
+        "fontWeight": "medium",
+        "fill": "#9ca3af"
+      }
+    }
+  ]
+}

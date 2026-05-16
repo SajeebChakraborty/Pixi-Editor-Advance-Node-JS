@@ -1,0 +1,154 @@
+openapi: 3.0.0
+info:
+  title: Pixigen API Documentation
+  description: API documentation for the Pixigen editor and backend services.
+  version: 1.0.0
+servers:
+  - url: /api
+    description: Local development server
+
+paths:
+  /export-image:
+    post:
+      summary: Export high-quality image
+      description: Handles high-quality image export with custom resolutions.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                canvasJson:
+                  type: string
+                  description: Fabric.js canvas JSON data
+                format:
+                  type: string
+                  enum: [png, jpg]
+                  default: png
+                quality:
+                  type: number
+                  format: float
+                  default: 0.95
+                width:
+                  type: integer
+                height:
+                  type: integer
+                multiplier:
+                  type: integer
+                  default: 2
+                  description: DPI multiplier for export quality
+              required:
+                - canvasJson
+      responses:
+        "200":
+          description: Successful export
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        "400":
+          description: Missing canvas data
+        "500":
+          description: Export failed
+
+  /export-video:
+    post:
+      summary: Export video job
+      description: Creates a video export job and queues it for background processing.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                width:
+                  type: integer
+                height:
+                  type: integer
+                layers:
+                  type: object
+                fps:
+                  type: integer
+                  default: 30
+      responses:
+        "200":
+          description: Video export job queue created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+                  jobId:
+                    type: string
+        "500":
+          description: Internal Server Error
+
+  /projects/save:
+    post:
+      summary: Save or update a project
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                userId:
+                  type: string
+                  format: uuid
+                projectId:
+                  type: string
+                  format: uuid
+                name:
+                  type: string
+                canvasData:
+                  type: object
+              required:
+                - userId
+      responses:
+        "200":
+          description: Project saved successfully
+        "400":
+          description: User ID is required
+        "500":
+          description: Failed to save project
+
+  /proxy:
+    get:
+      summary: Proxy asset requests to bypass CORS
+      parameters:
+        - name: url
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Successful fetch
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          description: URL is required
+        "500":
+          description: Failed to fetch asset
+
+components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-KEY

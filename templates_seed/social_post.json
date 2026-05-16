@@ -1,0 +1,114 @@
+{
+  "name": "Trendy Instagram Post",
+  "description": "High-impact social media layout with bold typography and image placeholders.",
+  "category": "social",
+  "width": 1080,
+  "height": 1350,
+  "layers": [
+    {
+      "id": "s-bg-1",
+      "type": "shape",
+      "name": "Gradient Background",
+      "locked": true,
+      "properties": {
+        "fill": "#f9fafb",
+        "width": 1080,
+        "height": 1350,
+        "left": 0,
+        "top": 0
+      }
+    },
+    {
+      "id": "s-accent-1",
+      "type": "shape",
+      "name": "Design Accent",
+      "locked": false,
+      "properties": {
+        "left": -100,
+        "top": 800,
+        "width": 1280,
+        "height": 600,
+        "fill": "#8b5cf6",
+        "angle": -5
+      }
+    },
+    {
+      "id": "s-img-1",
+      "type": "image",
+      "name": "Main Feature Image",
+      "locked": false,
+      "isPlaceholder": true,
+      "properties": {
+        "left": 100,
+        "top": 100,
+        "width": 880,
+        "height": 800,
+        "fill": "#e5e7eb",
+        "rx": 24,
+        "ry": 24
+      }
+    },
+    {
+      "id": "s-text-1",
+      "type": "text",
+      "name": "Headline",
+      "locked": false,
+      "properties": {
+        "left": 100,
+        "top": 950,
+        "text": "BOOST YOUR\nCREATIVITY",
+        "fontSize": 72,
+        "fontFamily": "Inter",
+        "fontWeight": "black",
+        "fill": "#111827",
+        "lineHeight": 1.1
+      }
+    },
+    {
+      "id": "s-text-2",
+      "type": "text",
+      "name": "Subheadline",
+      "locked": false,
+      "properties": {
+        "left": 100,
+        "top": 1120,
+        "text": "Start building your dream projects today with our professional toolkit.",
+        "fontSize": 24,
+        "fontFamily": "Inter",
+        "fontWeight": "medium",
+        "fill": "#4b5563",
+        "width": 800
+      }
+    },
+    {
+      "id": "s-logo-1",
+      "type": "image",
+      "name": "Logo Icon",
+      "locked": false,
+      "isPlaceholder": true,
+      "properties": {
+        "left": 100,
+        "top": 1250,
+        "width": 40,
+        "height": 40,
+        "fill": "#8b5cf6"
+      }
+    },
+    {
+      "id": "s-text-3",
+      "type": "text",
+      "name": "Brand Name",
+      "locked": false,
+      "properties": {
+        "left": 150,
+        "top": 1260,
+        "text": "PIXIGEN STUDIO",
+        "fontSize": 16,
+        "fontFamily": "Inter",
+        "fontWeight": "bold",
+        "fill": "#8b5cf6",
+        "charSpacing": 200
+      }
+    }
+  ]
+}
