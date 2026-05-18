@@ -1,23 +1,34 @@
 "use client";
 
 import React, { useRef, useState, useEffect } from "react";
-import { FabricImage } from "fabric";
 import { useEditorStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Search, ChevronRight, Upload, X } from "lucide-react";
+import { RefreshCcw, Search, ChevronRight, Upload, X } from "lucide-react";
 import Image from "next/image";
 
 import { AssetService } from "@/lib/asset-service";
 import { addMediaFromUrl } from "@/lib/editor-utils";
 import { toast } from "sonner";
 
+type ImageAsset = {
+  id: string;
+  name: string;
+  type: string;
+  category?: string | null;
+  url: string;
+};
+
 export function ImageTool() {
   const [search, setSearch] = useState("");
-  const { recentAssets, deleteLayer, getLayers } = useEditorStore();
-  const [categories, setCategories] = useState<
-    { name: string; items: any[] }[]
-  >([]);
+  const {
+    recentAssets,
+    deleteLayer,
+    getLayers,
+    getSelectedLayer,
+    removeRecentAsset,
+  } = useEditorStore();
+  const [assets, setAssets] = useState<ImageAsset[]>([]);
   const [isDragging, setIsDragging] = useState(false);
   const [loading, setLoading] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -86,47 +97,88 @@ export function ImageTool() {
 
   const loadImages = async () => {
     try {
-      const assets = await AssetService.getAssets("image");
-
-      // Group by category
-      const grouped = assets.reduce((acc: any, asset: any) => {
-        const cat = asset.category || "Uncategorized";
-        if (!acc[cat]) acc[cat] = [];
-        acc[cat].push(asset);
-        return acc;
-      }, {});
-
-      const catList = Object.keys(grouped).map((name) => ({
-        name,
-        items: grouped[name],
-      }));
-
-      setCategories(catList);
+      const imageAssets = await AssetService.getAssets("image");
+      setAssets(imageAssets.filter((asset) => asset.enabled !== false));
     } catch (e) {
       console.error("Failed to load images", e);
     }
   };
 
-  // Filtering categories based on search
-  const filteredCategories = categories
+  const normalizedSearch = search.trim().toLowerCase();
+  const hasSearch = normalizedSearch.length > 0;
+
+  const assetMatchesSearch = (asset: ImageAsset) => {
+    if (!hasSearch) return true;
+
+    return [asset.name, asset.category]
+      .filter(Boolean)
+      .some((value) => value!.toLowerCase().includes(normalizedSearch));
+  };
+
+  const recentImageMatchesSearch = (asset: { name: string; url: string }) => {
+    if (!hasSearch) return true;
+
+    return [asset.name, asset.url]
+      .filter(Boolean)
+      .some((value) => value.toLowerCase().includes(normalizedSearch));
+  };
+
+  const recentImages = recentAssets
+    .filter((asset) => asset.type === "image")
+    .filter(recentImageMatchesSearch)
+    .slice(0, 4);
+
+  const groupedAssets = assets.reduce<Record<string, ImageAsset[]>>(
+    (acc, asset) => {
+      const category = asset.category || "Uncategorized";
+      if (!acc[category]) acc[category] = [];
+      acc[category].push(asset);
+      return acc;
+    },
+    {},
+  );
+
+  const filteredCategories = Object.keys(groupedAssets)
     .map((cat) => ({
-      ...cat,
-      items: cat.items.filter((item) =>
-        item.name.toLowerCase().includes(search.toLowerCase()),
-      ),
+      name: cat,
+      items: groupedAssets[cat].filter(assetMatchesSearch),
     }))
     .filter((cat) => cat.items.length > 0);
+
+  const hasLibraryAssets = assets.length > 0;
+  const hasSearchResults =
+    recentImages.length > 0 || filteredCategories.length > 0;
 
   const addImage = async (url: string, name: string = "Image") => {
     try {
       // Get the store FRESH at call time — not from a closure captured before
       // any async operations, which could give a stale fabricCanvas reference.
       const store = useEditorStore.getState();
-      await addMediaFromUrl(url, store, "image");
+      await addMediaFromUrl(url, store, "image", false, undefined, name);
     } catch (err) {
       console.error("Error adding image:", err);
       toast.error("Failed to add image.");
     }
+  };
+
+  const replaceSelectedImage = async (
+    e: React.MouseEvent<HTMLButtonElement>,
+    url: string,
+    name: string,
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const selectedLayer = getSelectedLayer();
+    if (!selectedLayer || selectedLayer.type !== "image") {
+      toast.info("Select an image on the canvas first.");
+      return;
+    }
+
+    deleteLayer(selectedLayer.id);
+    const store = useEditorStore.getState();
+    await addMediaFromUrl(url, store, "image", false, undefined, name);
+    toast.success("Selected image replaced.");
   };
 
   const removeRecentImageFromCanvas = (
@@ -141,7 +193,8 @@ export function ImageTool() {
       .find((layer) => layer.type === "image" && layer.data?.url === url);
 
     if (!matchingLayer) {
-      toast.info("This image is not on the active canvas.");
+      removeRecentAsset(url);
+      toast.success("Photo removed from recent uploads.");
       return;
     }
 
@@ -202,7 +255,7 @@ export function ImageTool() {
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="i.e. indoor, Person, dog"
+              placeholder="Search by name or category"
               className="h-11 pl-10 bg-[#222] border-transparent focus:border-[#8b5cf6] text-sm text-white rounded-xl"
             />
           </div>
@@ -211,52 +264,68 @@ export function ImageTool() {
 
       <div className="flex-1 overflow-y-auto px-5 pb-8 space-y-8 no-scrollbar">
         {/* Recent Uploads Section */}
-        {recentAssets.filter((a) => a.type === "image").length > 0 && (
+        {recentImages.length > 0 && (
           <div className="space-y-3">
             <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-1">
               Recent Uploads
             </h3>
             <div className="grid grid-cols-2 gap-3">
-              {recentAssets
-                .filter((a) => a.type === "image")
-                .slice(0, 4)
-                .map((item) => (
-                  <div
-                    key={item.url + Math.random()}
-                    onClick={() => addImage(item.url, item.name)}
-                    className="group relative h-24 rounded-lg overflow-hidden cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
+              {recentImages.map((item) => (
+                <div
+                  key={item.id}
+                  onClick={() => addImage(item.url, item.name)}
+                  className="group relative h-24 rounded-lg overflow-hidden cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
+                >
+                  <button
+                    type="button"
+                    onClick={(e) => removeRecentImageFromCanvas(e, item.url)}
+                    title="Remove from canvas"
+                    aria-label="Remove photo from canvas"
+                    className="absolute right-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-600 text-white opacity-0 shadow-lg shadow-black/40 transition-all hover:bg-red-500 group-hover:opacity-100"
                   >
+                    <X className="h-4 w-4 stroke-[3]" />
+                  </button>
+                  {getSelectedLayer()?.type === "image" && (
                     <button
                       type="button"
-                      onClick={(e) => removeRecentImageFromCanvas(e, item.url)}
-                      title="Remove from canvas"
-                      aria-label="Remove photo from canvas"
-                      className="absolute right-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-600 text-white opacity-0 shadow-lg shadow-black/40 transition-all hover:bg-red-500 group-hover:opacity-100"
+                      onClick={(e) =>
+                        replaceSelectedImage(e, item.url, item.name)
+                      }
+                      title="Replace selected image"
+                      aria-label="Replace selected image"
+                      className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/40 transition-all hover:bg-[#8b5cf6] group-hover:opacity-100"
                     >
-                      <X className="h-4 w-4 stroke-[3]" />
+                      <RefreshCcw className="h-3.5 w-3.5 stroke-[3]" />
                     </button>
-                    <Image
-                      src={item.url}
-                      alt={item.name}
-                      fill
-                      unoptimized
-                      className="object-cover group-hover:scale-110 transition-transform duration-500 opacity-60 group-hover:opacity-100"
-                    />
-                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex items-end p-2">
-                      <span className="text-[10px] font-bold text-white uppercase tracking-tighter truncate">
-                        {item.name}
-                      </span>
-                    </div>
+                  )}
+                  <Image
+                    src={item.url}
+                    alt={item.name}
+                    fill
+                    unoptimized
+                    className="object-cover group-hover:scale-110 transition-transform duration-500 opacity-60 group-hover:opacity-100"
+                  />
+                  <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-transparent to-transparent flex items-end p-2">
+                    <span className="text-[10px] font-bold text-white uppercase tracking-tighter truncate">
+                      {item.name}
+                    </span>
                   </div>
-                ))}
+                </div>
+              ))}
             </div>
           </div>
         )}
 
         {/* Categories */}
-        {filteredCategories.length === 0 ? (
+        {!hasSearchResults ? (
           <div className="text-center text-gray-500 py-10">
-            <p>No images found matching &quot;{search}&quot;</p>
+            <p>
+              {hasSearch
+                ? `No images found matching "${search}"`
+                : hasLibraryAssets
+                  ? "No recent uploads yet"
+                  : "No library photos yet"}
+            </p>
           </div>
         ) : (
           filteredCategories.map((cat) => (
@@ -279,6 +348,19 @@ export function ImageTool() {
                     onClick={() => addImage(item.url, item.name)}
                     className="group relative h-24 rounded-lg overflow-hidden cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
                   >
+                    {getSelectedLayer()?.type === "image" && (
+                      <button
+                        type="button"
+                        onClick={(e) =>
+                          replaceSelectedImage(e, item.url, item.name)
+                        }
+                        title="Replace selected image"
+                        aria-label="Replace selected image"
+                        className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/40 transition-all hover:bg-[#8b5cf6] group-hover:opacity-100"
+                      >
+                        <RefreshCcw className="h-3.5 w-3.5 stroke-[3]" />
+                      </button>
+                    )}
                     <Image
                       src={item.url}
                       alt={item.name}

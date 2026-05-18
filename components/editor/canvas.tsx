@@ -26,6 +26,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   const {
     canvas: { width, height, zoom, activePageId, pages, selectedLayerId },
     activeCanvasTool,
+    penSettings,
     setFabricCanvas,
     selectLayer,
     setActivePage,
@@ -41,6 +42,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
   const page = pages.find((p) => p.id === pageId);
   const pageName = page?.name || `Page ${index + 1}`;
+  const pageWidth = page?.width ?? width;
+  const pageHeight = page?.height ?? height;
 
   const isActive = activePageId === pageId;
   const isHandTool = activeCanvasTool === "hand";
@@ -78,6 +81,43 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       } else if (isCmd && e.key === "y") {
         e.preventDefault();
         redo();
+      } else if (
+        ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)
+      ) {
+        const target = e.target as HTMLElement;
+        if (
+          target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.isContentEditable
+        )
+          return;
+
+        const canvas = useEditorStore.getState().canvas.fabricCanvas;
+        const activeObjects = canvas?.getActiveObjects() || [];
+        if (!canvas || activeObjects.length === 0) return;
+
+        e.preventDefault();
+        const layers = useEditorStore.getState().getLayers();
+        const step = isShift ? 10 : 1;
+        const delta = {
+          ArrowUp: { x: 0, y: -step },
+          ArrowDown: { x: 0, y: step },
+          ArrowLeft: { x: -step, y: 0 },
+          ArrowRight: { x: step, y: 0 },
+        }[e.key]!;
+
+        activeObjects.forEach((obj) => {
+          const layer = layers.find((item) => item.objectId === (obj as any).name);
+          if (layer?.locked) return;
+
+          obj.set({
+            left: (obj.left || 0) + delta.x,
+            top: (obj.top || 0) + delta.y,
+          });
+          obj.setCoords();
+        });
+        canvas.requestRenderAll();
+        saveToHistory(JSON.stringify(canvas.toJSON()));
       } else if (e.key === "Delete" || e.key === "Backspace") {
         // Don't delete if editing text or typing in input
         const target = e.target as HTMLElement;
@@ -135,8 +175,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     if (!canvasRef.current || fabricCanvasRef.current) return;
 
     const canvas = new fabric.Canvas(canvasRef.current, {
-      width: width * zoom,
-      height: height * zoom,
+      width: pageWidth * zoom,
+      height: pageHeight * zoom,
       // REMOVED backgroundColor so it doesn't cover objects
       selection: !isHandTool,
       preserveObjectStacking: true,
@@ -144,7 +184,17 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     });
 
     fabricCanvasRef.current = canvas;
-    if (isActive) setFabricCanvas(canvas);
+    const currentEditorState = useEditorStore.getState();
+    const shouldRegisterCanvas =
+      currentEditorState.canvas.activePageId === pageId ||
+      (!currentEditorState.canvas.fabricCanvas && index === 0);
+
+    if (shouldRegisterCanvas) {
+      if (currentEditorState.canvas.activePageId !== pageId) {
+        setActivePage(pageId);
+      }
+      setFabricCanvas(canvas);
+    }
 
     // Sync layers FROM state TO new canvas (important for remounting)
     const page = pages.find(p => p.id === pageId);
@@ -160,7 +210,15 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
          if (canvas.getObjects().some((o: any) => o.name === layer.objectId)) continue;
 
          if ((layer.type === 'image' || layer.type === 'sticker' || layer.type === "video") && layer.data?.url) {
-           await addMediaFromUrl(layer.data.url, useEditorStore.getState(), layer.type as any, true, layer.objectId);
+           await addMediaFromUrl(
+             layer.data.url,
+             useEditorStore.getState(),
+             layer.type as any,
+             true,
+             layer.objectId,
+             layer.data?.name || layer.name,
+             canvas,
+           );
          } else if (layer.type === 'text' && layer.objectId) {
            addTextToCanvas(layer.data?.content || layer.name, layer.data || {}, canvas, layer.objectId);
          }
@@ -171,7 +229,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     }
 
     // CRITICAL: Ensure this page's canvas is the one in the store when active
-    if (isActive && fabricCanvasRef.current) {
+    if (shouldRegisterCanvas && fabricCanvasRef.current) {
         setFabricCanvas(fabricCanvasRef.current);
     }
 
@@ -304,8 +362,26 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     saveToHistory(JSON.stringify(canvas.toJSON()));
 
     // History listeners
-    const triggerSave = () => {
+    const isTransientCropObject = (target?: any) =>
+      target?.excludeFromExport ||
+      (typeof target?.name === "string" && target.name.startsWith("crop_overlay_"));
+    const isTransientGuideObject = (target?: any) =>
+      typeof target?.name === "string" && target.name.startsWith("smart_guide_");
+
+    const runTransientCanvasMutation = (mutator: () => void) => {
+      const previousHistoryState = (canvas as any).isHistoryLoading;
+      (canvas as any).isHistoryLoading = true;
+      try {
+        mutator();
+        canvas.requestRenderAll();
+      } finally {
+        (canvas as any).isHistoryLoading = previousHistoryState;
+      }
+    };
+
+    const triggerSave = (event?: any) => {
       if ((canvas as any).isHistoryLoading) return;
+      if (isTransientCropObject(event?.target) || isTransientGuideObject(event?.target)) return;
       saveToHistory(JSON.stringify(canvas.toJSON()));
     };
 
@@ -313,14 +389,162 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     canvas.on("object:modified", triggerSave);
     canvas.on("object:removed", triggerSave);
 
+    canvas.on("path:created", (event: any) => {
+      const path = event?.path as any;
+      if (!path) return;
+      path.set({
+        name: path.name || `markup_${Date.now()}`,
+        data: {
+          ...(path.data || {}),
+          isMarkup: true,
+        },
+      });
+    });
+
+    // Smart guides (Canva-like center + object alignment while moving)
+    const SMART_GUIDE_THRESHOLD = 6;
+    const smartGuides: fabric.Line[] = [];
+
+    const clearSmartGuides = () => {
+      if (!smartGuides.length) return;
+      runTransientCanvasMutation(() => {
+        while (smartGuides.length) {
+          const guide = smartGuides.pop();
+          if (guide) canvas.remove(guide);
+        }
+      });
+    };
+
+    const drawSmartGuide = (
+      orientation: "vertical" | "horizontal",
+      at: number,
+    ) => {
+      const line =
+        orientation === "vertical"
+          ? new fabric.Line([at, 0, at, canvas.getHeight()], {
+              stroke: "#8b5cf6",
+              strokeWidth: 1,
+              strokeDashArray: [6, 4],
+              selectable: false,
+              evented: false,
+              excludeFromExport: true,
+              name: "smart_guide_v",
+            } as any)
+          : new fabric.Line([0, at, canvas.getWidth(), at], {
+              stroke: "#8b5cf6",
+              strokeWidth: 1,
+              strokeDashArray: [6, 4],
+              selectable: false,
+              evented: false,
+              excludeFromExport: true,
+              name: "smart_guide_h",
+            } as any);
+
+      smartGuides.push(line);
+      canvas.add(line);
+      canvas.bringObjectToFront(line);
+    };
+
+    const getBoundsAxes = (obj: fabric.FabricObject) => {
+      const bounds = obj.getBoundingRect();
+      const left = bounds.left;
+      const top = bounds.top;
+      const right = bounds.left + bounds.width;
+      const bottom = bounds.top + bounds.height;
+      const centerX = left + bounds.width / 2;
+      const centerY = top + bounds.height / 2;
+
+      return { left, right, centerX, top, bottom, centerY };
+    };
+
+    canvas.on("object:moving", (evt) => {
+      const movingObject = evt.target as fabric.FabricObject | undefined;
+      if (!movingObject || isTransientCropObject(movingObject) || isTransientGuideObject(movingObject)) {
+        return;
+      }
+
+      const candidateXs: number[] = [canvas.getWidth() / 2];
+      const candidateYs: number[] = [canvas.getHeight() / 2];
+
+      canvas.getObjects().forEach((obj) => {
+        if (
+          obj === movingObject ||
+          isTransientCropObject(obj) ||
+          isTransientGuideObject(obj)
+        ) {
+          return;
+        }
+        const axes = getBoundsAxes(obj);
+        candidateXs.push(axes.left, axes.centerX, axes.right);
+        candidateYs.push(axes.top, axes.centerY, axes.bottom);
+      });
+
+      const movingAxes = getBoundsAxes(movingObject);
+      const movingXPoints = [movingAxes.left, movingAxes.centerX, movingAxes.right];
+      const movingYPoints = [movingAxes.top, movingAxes.centerY, movingAxes.bottom];
+
+      let snapDx = 0;
+      let snapDy = 0;
+      let snappedX: number | null = null;
+      let snappedY: number | null = null;
+      let minDx = Number.POSITIVE_INFINITY;
+      let minDy = Number.POSITIVE_INFINITY;
+
+      for (const movingX of movingXPoints) {
+        for (const candidateX of candidateXs) {
+          const dx = candidateX - movingX;
+          const absDx = Math.abs(dx);
+          if (absDx < minDx && absDx <= SMART_GUIDE_THRESHOLD) {
+            minDx = absDx;
+            snapDx = dx;
+            snappedX = candidateX;
+          }
+        }
+      }
+
+      for (const movingY of movingYPoints) {
+        for (const candidateY of candidateYs) {
+          const dy = candidateY - movingY;
+          const absDy = Math.abs(dy);
+          if (absDy < minDy && absDy <= SMART_GUIDE_THRESHOLD) {
+            minDy = absDy;
+            snapDy = dy;
+            snappedY = candidateY;
+          }
+        }
+      }
+
+      if (snapDx !== 0 || snapDy !== 0) {
+        movingObject.set({
+          left: (movingObject.left || 0) + snapDx,
+          top: (movingObject.top || 0) + snapDy,
+        });
+        movingObject.setCoords();
+      }
+
+      clearSmartGuides();
+      if (snappedX !== null || snappedY !== null) {
+        runTransientCanvasMutation(() => {
+          if (snappedX !== null) drawSmartGuide("vertical", snappedX);
+          if (snappedY !== null) drawSmartGuide("horizontal", snappedY);
+        });
+      }
+    });
+
+    canvas.on("object:modified", () => clearSmartGuides());
+
     // Selection sync
+    const syncObjectSelectionToLayer = (obj: any) => {
+      if (!obj || isTransientCropObject(obj)) return;
+      const layers = useEditorStore.getState().getLayers();
+      const layerId = layers.find((l: Layer) => l.objectId === obj.name)?.id;
+      selectLayer(layerId || null);
+    };
+
     const handleSelection = (e: any) => {
       const selected = e.selected || [];
       if (selected.length === 1) {
-        const obj = selected[0];
-        const layers = useEditorStore.getState().getLayers();
-        const layerId = layers.find((l: Layer) => l.objectId === obj.name)?.id;
-        selectLayer(layerId || null);
+        syncObjectSelectionToLayer(selected[0]);
       } else {
         selectLayer(null);
       }
@@ -328,7 +552,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     canvas.on("selection:created", handleSelection);
     canvas.on("selection:updated", handleSelection);
-    canvas.on("selection:cleared", () => selectLayer(null));
+    canvas.on("selection:cleared", () => {
+      clearSmartGuides();
+      selectLayer(null);
+    });
 
     // Mouse Wheel Zoom
     const handleMouseWheel = (opt: any) => {
@@ -351,8 +578,19 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     // Hand tool logic & Spacebar panning
     let isDragging = false;
+    let isErasing = false;
     let lastPosX = 0;
     let lastPosY = 0;
+    const eraseMarkupAtPointer = (opt: any) => {
+      const target = canvas.findTarget(opt.e);
+      if (!target) return;
+      const isMarkup = Boolean((target as any).data?.isMarkup);
+      if (!isMarkup) return;
+      runTransientCanvasMutation(() => {
+        canvas.remove(target);
+      });
+      triggerSave({ target });
+    };
 
     canvas.on("mouse:down", (opt) => {
       const store = useEditorStore.getState();
@@ -371,6 +609,15 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         setFabricCanvas(canvas);
       }
 
+      if (store.activeCanvasTool === "pen" && store.penSettings.mode === "eraser") {
+        isErasing = true;
+        eraseMarkupAtPointer(opt);
+      }
+
+      if (opt.target && store.activeCanvasTool !== "hand" && !isSpacePressed) {
+        syncObjectSelectionToLayer(opt.target);
+      }
+
       // Deselect all if hand tool or space pressed
       if (store.activeCanvasTool === "hand" || isSpacePressed) {
         canvas.discardActiveObject();
@@ -379,7 +626,11 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     });
 
     canvas.on("mouse:move", (opt) => {
+      const store = useEditorStore.getState();
       const isSpacePressed = (window as any).isSpacePressed;
+      if (store.activeCanvasTool === "pen" && store.penSettings.mode === "eraser" && isErasing) {
+        eraseMarkupAtPointer(opt);
+      }
       if (isDragging) {
         const e = opt.e as any;
         const clientX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
@@ -401,6 +652,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     });
 
     canvas.on("mouse:up", () => {
+      clearSmartGuides();
+      isErasing = false;
       if (isDragging) {
         isDragging = false;
         canvas.setCursor(isHandTool ? "grab" : "default");
@@ -412,7 +665,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       fabricCanvasRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageId]);
+  }, [pageId, pageWidth, pageHeight, zoom, isHandTool]);
 
   // Global spacebar listener for panning
   useEffect(() => {
@@ -494,7 +747,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   useEffect(() => {
     if (fabricCanvasRef.current) {
       const canvas = fabricCanvasRef.current;
-      canvas.setDimensions({ width: width * zoom, height: height * zoom });
+      canvas.setDimensions({ width: pageWidth * zoom, height: pageHeight * zoom });
       canvas.setZoom(zoom);
 
       // Update interactive properties based on tool
@@ -503,18 +756,22 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       canvas.defaultCursor = isHandTool ? "grab" : "default";
 
       // Fix Pen Tool: Enable drawing mode
-      canvas.isDrawingMode = activeCanvasTool === "pen";
+      canvas.isDrawingMode = activeCanvasTool === "pen" && penSettings.mode === "brush";
       if (canvas.isDrawingMode) {
         if (!canvas.freeDrawingBrush) {
           canvas.freeDrawingBrush = new fabric.PencilBrush(canvas);
         }
-        canvas.freeDrawingBrush.width = 3;
-        canvas.freeDrawingBrush.color = "#8b5cf6";
+        canvas.freeDrawingBrush.width = penSettings.width;
+        canvas.freeDrawingBrush.color = penSettings.color;
+      }
+      if (activeCanvasTool === "pen" && penSettings.mode === "eraser") {
+        canvas.defaultCursor = "cell";
+        canvas.hoverCursor = "cell";
       }
 
       canvas.renderAll();
     }
-  }, [width, height, zoom, isHandTool, activeCanvasTool, pageId]);
+  }, [pageWidth, pageHeight, zoom, isHandTool, activeCanvasTool, pageId, penSettings]);
 
   // Video Sync Logic
   const {
@@ -570,6 +827,9 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       if (!canvas) return false;
 
       const layers = pages.find((p: EditorPage) => p.id === pageId)?.layers || [];
+      const hasVideoLayer = layers.some((layer: Layer) => layer.type === "video");
+      if (!hasVideoLayer) return false;
+
       const currTime = Number.isFinite(timelineTime) ? timelineTime : 0;
       let needsRender = false;
 
@@ -842,8 +1102,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
             : "hover:shadow-2xl border-transparent",
         )}
         style={{
-          width: width * zoom,
-          height: height * zoom,
+          width: pageWidth * zoom,
+          height: pageHeight * zoom,
           overflow: "visible",
           zIndex: 1,
         }}
@@ -920,7 +1180,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
               spellCheck={false}
             />
             <span className="text-[11px] font-bold text-gray-500 uppercase tracking-[0.2em]">
-              • {width}x{height}
+              • {pageWidth}x{pageHeight}
             </span>
           </div>
         ) : (
@@ -929,7 +1189,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
             onClick={handleNameClick}
             title="Click to rename page"
           >
-            {pageName} <span className="mx-1">•</span> {width}x{height}
+            {pageName} <span className="mx-1">•</span> {pageWidth}x{pageHeight}
           </span>
         )}
       </div>
@@ -1010,9 +1270,12 @@ export function ZoomControls() {
 export function Canvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const {
-    canvas: { pages, width, height },
+    canvas: { pages, width, height, activePageId },
     setZoom,
   } = useEditorStore();
+  const activePage = pages.find((page) => page.id === activePageId);
+  const activePageWidth = activePage?.width ?? width;
+  const activePageHeight = activePage?.height ?? height;
 
   // Auto-zoom to fit container using ResizeObserver
   useEffect(() => {
@@ -1031,8 +1294,8 @@ export function Canvas() {
         const availableHeight = containerHeight - padding;
 
         if (availableWidth > 0 && availableHeight > 0) {
-          const scaleX = availableWidth / width;
-          const scaleY = availableHeight / height;
+          const scaleX = availableWidth / activePageWidth;
+          const scaleY = availableHeight / activePageHeight;
 
           // Fit to screen, but don't explode it too much on ultra-wide screens
           const scale = Math.min(scaleX, scaleY, 1.1);
@@ -1045,7 +1308,7 @@ export function Canvas() {
     observer.observe(containerRef.current);
 
     return () => observer.disconnect();
-  }, [width, height, setZoom]);
+  }, [activePageWidth, activePageHeight, setZoom]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -1072,6 +1335,9 @@ export function Canvas() {
               dataUrl,
               store,
               file.type.startsWith("video/") ? "video" : "image",
+              false,
+              undefined,
+              file.name,
             );
           }
         };

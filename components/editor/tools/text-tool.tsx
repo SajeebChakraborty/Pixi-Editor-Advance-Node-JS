@@ -1,57 +1,162 @@
 "use client";
 
-import { useEditorStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { commitCanvasHistory } from "@/lib/editor-actions";
+import { TEXT_FONT_CATEGORIES, type TextFontPreset } from "@/lib/editor-fonts";
+import { useEditorStore, type Layer } from "@/lib/store";
 import { IText } from "fabric";
-import { TEXT_FONT_CATEGORIES } from "@/lib/editor-fonts";
+import { Plus } from "lucide-react";
+
+const isTextObject = (object: unknown): object is IText => {
+  const type = String((object as any)?.type || "").toLowerCase();
+  return type === "i-text" || type === "textbox" || type === "text";
+};
+
+const findLayerForObject = (layers: Layer[], object: any) => {
+  if (!object?.name) return undefined;
+  return layers.find(
+    (layer) => layer.type === "text" && layer.objectId === object.name,
+  );
+};
 
 export function TextTool() {
-  const { addLayer } = useEditorStore();
+  const addLayer = useEditorStore((state) => state.addLayer);
 
-  const addText = (text: string, options: any = {}) => {
-    // Use getState() to always get the freshest canvas reference
+  const applyFontToSelectedText = (style: TextFontPreset) => {
     const store = useEditorStore.getState();
     const fabricCanvas = store.canvas.fabricCanvas;
+    if (!fabricCanvas) return false;
+
+    const layers = store.getLayers();
+    const activeObject = fabricCanvas.getActiveObject() as any;
+    const selectedLayer = store.getSelectedLayer();
+
+    let targetObject: any = isTextObject(activeObject) ? activeObject : null;
+    let targetLayer = targetObject
+      ? findLayerForObject(layers, targetObject)
+      : undefined;
+
+    if (
+      !targetObject &&
+      selectedLayer?.type === "text" &&
+      selectedLayer.objectId
+    ) {
+      targetObject =
+        fabricCanvas
+          .getObjects()
+          .find((object: any) => object.name === selectedLayer.objectId) ||
+        null;
+      targetLayer = selectedLayer;
+    }
+
+    if (!isTextObject(targetObject)) return false;
+
+    // Font preset cards should only change the selected text's family.
+    // Do not overwrite content, size, color, position, or weight here.
+    targetObject.set({ fontFamily: style.font });
+    (targetObject as any).dirty = true;
+    (targetObject as any).initDimensions?.();
+    targetObject.setCoords();
+
+    fabricCanvas.setActiveObject(targetObject);
+    fabricCanvas.requestRenderAll();
+
+    if (!targetLayer) {
+      targetLayer = findLayerForObject(layers, targetObject);
+    }
+
+    if (targetLayer) {
+      store.selectLayer(targetLayer.id);
+      store.updateLayerData(targetLayer.id, {
+        fontFamily: style.font,
+      });
+    }
+
+    // Keep properties panel local state in sync when it is already mounted.
+    targetObject.fire("modified");
+    commitCanvasHistory(fabricCanvas);
+
+    return true;
+  };
+
+  const handleFontPresetClick = (style: TextFontPreset) => {
+    const didApplyToSelection = applyFontToSelectedText(style);
+
+    if (!didApplyToSelection) {
+      addText(style.label, {
+        fontFamily: style.font,
+        fontWeight: style.weight,
+      });
+    }
+  };
+
+  const addText = (text: string, options: any = {}) => {
+    // Use getState() to always get the freshest canvas reference.
+    const store = useEditorStore.getState();
+    const fabricCanvas = store.canvas.fabricCanvas;
+
     if (!fabricCanvas) {
       console.warn("No active canvas. Click on the artboard first.");
       return;
     }
 
+    const id = `text_${Date.now()}`;
+    const currentDuration = store.videoState.duration;
+    const duration = Math.max(currentDuration, 3600);
+    const fontFamily = options.fontFamily || "Roboto";
+    const fontWeight = options.fontWeight || "normal";
+    const fill = options.fill || "#ffffff";
+    const fontSize = options.fontSize || 40;
+
     const textBox = new IText(text, {
       left: fabricCanvas.width! / fabricCanvas.getZoom() / 2,
       top: fabricCanvas.height! / fabricCanvas.getZoom() / 2,
-      fill: "#ffffff",
-      fontFamily: "Roboto",
-      fontSize: 40,
+      fill,
+      fontFamily,
+      fontWeight,
+      fontSize,
       originX: "center",
       originY: "center",
       ...options,
     });
 
-    const id = `text_${Date.now()}`;
-    const currentDuration = store.videoState.duration;
-
     (textBox as any).name = id;
+    (textBox as any).objectId = id;
+    (textBox as any).data = {
+      content: text,
+      fontFamily,
+      fontWeight,
+      fill,
+      fontSize,
+    };
+    (textBox as any).startTime = 0;
+    (textBox as any).duration = duration;
 
-    // Add to canvas FIRST so object exists when sync effect runs
+    // Add to canvas FIRST so object exists when sync effect runs.
     fabricCanvas.add(textBox);
     fabricCanvas.setActiveObject(textBox);
     fabricCanvas.requestRenderAll();
 
-    // Register layer AFTER the object is on canvas
+    // Register layer AFTER the object is on canvas.
     addLayer({
       type: "text",
       name: text,
       locked: false,
       visible: true,
       objectId: id,
+      data: {
+        content: text,
+        fontFamily,
+        fontWeight,
+        fill,
+        fontSize,
+      },
       startTime: 0,
-      duration: Math.max(currentDuration, 3600),
+      duration,
     });
 
-    // Force a second render pass to catch any batched updates
     requestAnimationFrame(() => fabricCanvas.requestRenderAll());
+    commitCanvasHistory(fabricCanvas);
   };
 
   return (
@@ -70,16 +175,12 @@ export function TextTool() {
               <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest pl-1">
                 {group.category}
               </h3>
+
               <div className="grid gap-3">
                 {group.items.map((style) => (
                   <button
                     key={style.label}
-                    onClick={() =>
-                      addText(style.label, {
-                        fontFamily: style.font,
-                        fontWeight: style.weight,
-                      })
-                    }
+                    onClick={() => handleFontPresetClick(style)}
                     className="group flex flex-col items-start p-3 rounded-xl bg-[#222] border border-white/5 hover:border-white/20 transition-all hover:bg-[#2a2a2a] text-left"
                   >
                     <span

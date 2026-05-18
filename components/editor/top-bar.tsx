@@ -57,37 +57,38 @@ export function TopBar() {
     setIsEditingName(false);
   };
 
-  const handleExportPNG = async () => {
-    if (!fabricCanvas) return;
-    setExporting(true);
-    try {
-      const dataUrl = fabricCanvas.toDataURL({ format: "png", multiplier: 1 });
-      const link = document.createElement("a");
-      link.href = dataUrl;
-      link.download = "pixizen-export.png";
-      link.click();
-    } catch (error) {
-      console.error("[v0] Export error:", error);
-    } finally {
-      setExporting(false);
-    }
+  const exportFileName = (extension: "png" | "jpg") => {
+    const safeName = (name || "pixizen-export")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return `${safeName || "pixizen-export"}-${width}x${height}.${extension}`;
   };
 
-  const handleExportJPG = async () => {
+  const handleExportImage = async (
+    format: "png" | "jpeg",
+    multiplier = 1,
+    quality = 0.92,
+  ) => {
     if (!fabricCanvas) return;
     setExporting(true);
     try {
+      fabricCanvas.discardActiveObject();
+      fabricCanvas.requestRenderAll();
       const dataUrl = fabricCanvas.toDataURL({
-        format: "jpeg",
-        quality: 0.8,
-        multiplier: 1,
+        format,
+        quality,
+        multiplier,
       });
       const link = document.createElement("a");
       link.href = dataUrl;
-      link.download = "pixizen-export.jpg";
+      link.download = exportFileName(format === "png" ? "png" : "jpg");
       link.click();
+      toast.success(`${format === "png" ? "PNG" : "JPG"} download started.`);
     } catch (error) {
       console.error("Export error:", error);
+      toast.error("Failed to export image.");
     } finally {
       setExporting(false);
     }
@@ -288,26 +289,38 @@ export function TopBar() {
           Image Formats
         </DropdownMenuLabel>
         <DropdownMenuItem
-          onClick={handleExportPNG}
+          onClick={() => handleExportImage("png", 1)}
           className="cursor-pointer hover:bg-white/10 focus:bg-white/10 gap-2"
         >
           <FileImage className="w-4 h-4 text-blue-400" />
           <div className="flex flex-col">
             <span className="font-bold text-xs">PNG Image</span>
             <span className="text-[10px] text-gray-500">
-              High Quality, Transparent
+              Current size, transparent
             </span>
           </div>
         </DropdownMenuItem>
         <DropdownMenuItem
-          onClick={handleExportJPG}
+          onClick={() => handleExportImage("png", 2)}
+          className="cursor-pointer hover:bg-white/10 focus:bg-white/10 gap-2"
+        >
+          <FileImage className="w-4 h-4 text-cyan-400" />
+          <div className="flex flex-col">
+            <span className="font-bold text-xs">PNG Image 2x</span>
+            <span className="text-[10px] text-gray-500">
+              Larger high-resolution export
+            </span>
+          </div>
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          onClick={() => handleExportImage("jpeg", 1, 0.92)}
           className="cursor-pointer hover:bg-white/10 focus:bg-white/10 gap-2"
         >
           <FileImage className="w-4 h-4 text-orange-400" />
           <div className="flex flex-col">
             <span className="font-bold text-xs">JPG Image</span>
             <span className="text-[10px] text-gray-500">
-              Smaller Size, Solid Bg
+              High quality, smaller file
             </span>
           </div>
         </DropdownMenuItem>

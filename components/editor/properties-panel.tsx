@@ -1,75 +1,119 @@
 "use client";
 
+import { useEffect } from "react";
 import { useEditorStore } from "@/lib/store";
 import {
-  Settings,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  AlignStartVertical,
-  AlignCenterVertical,
-  AlignEndVertical,
+  Copy,
+  Eye,
+  EyeOff,
+  Lock,
+  Trash2,
+  Unlock,
 } from "lucide-react";
 import { ImageProperties } from "./properties/image-properties";
 import { TextProperties } from "./properties/text-properties";
 import { ShapeProperties } from "./properties/shape-properties";
 import { CanvasProperties } from "./properties/canvas-properties";
 import { VideoProperties } from "./properties/video-properties";
+import { PenProperties } from "./properties/pen-properties";
 import { Button } from "@/components/ui/button";
+import { commitCanvasHistory } from "@/lib/editor-actions";
 
 export function PropertiesPanel() {
   const {
     canvas: { fabricCanvas },
+    activeCanvasTool,
     getSelectedLayer,
+    getLayers,
+    selectLayer,
+    updateLayer,
+    duplicateLayer,
+    deleteLayer,
   } = useEditorStore();
 
-  const selectedLayer = getSelectedLayer();
-  const selectedObject =
-    selectedLayer && fabricCanvas
+  const storeSelectedLayer = getSelectedLayer();
+  const activeObject = fabricCanvas?.getActiveObject() || null;
+  const layers = getLayers();
+  const activeObjectLayer =
+    activeObject && (activeObject as any).name
+      ? layers.find((layer) => layer.objectId === (activeObject as any).name)
+      : undefined;
+  const storeSelectedObject =
+    storeSelectedLayer && fabricCanvas
       ? fabricCanvas
           .getObjects()
-          .find((obj) => (obj as any).name === selectedLayer.objectId)
+          .find((obj) => (obj as any).name === storeSelectedLayer.objectId)
       : null;
+  const selectedLayer =
+    storeSelectedLayer && storeSelectedObject
+      ? storeSelectedLayer
+      : activeObjectLayer;
+  const selectedObject =
+    storeSelectedLayer && storeSelectedObject
+      ? storeSelectedObject
+      : activeObjectLayer
+        ? activeObject
+        : null;
 
-  const handleAlign = (type: string) => {
-    if (!selectedObject || !fabricCanvas) return;
-
-    const canvasWidth = fabricCanvas.width!;
-    const canvasHeight = fabricCanvas.height!;
-    const bound = selectedObject.getBoundingRect();
-    const objWidth = bound.width;
-    const objHeight = bound.height;
-
-    const objLeft = selectedObject.left || 0;
-    const objTop = selectedObject.top || 0;
-
-    // Calculate the distance from the bounding box edge to the object's origin
-    const offsetX = objLeft - bound.left;
-    const offsetY = objTop - bound.top;
-
-    switch (type) {
-      case "left":
-        selectedObject.set({ left: 0 + offsetX });
-        break;
-      case "centerH":
-        selectedObject.set({ left: (canvasWidth - objWidth) / 2 + offsetX });
-        break;
-      case "right":
-        selectedObject.set({ left: canvasWidth - objWidth + offsetX });
-        break;
-      case "top":
-        selectedObject.set({ top: 0 + offsetY });
-        break;
-      case "centerV":
-        selectedObject.set({ top: (canvasHeight - objHeight) / 2 + offsetY });
-        break;
-      case "bottom":
-        selectedObject.set({ top: canvasHeight - objHeight + offsetY });
-        break;
+  useEffect(() => {
+    if (
+      activeObjectLayer &&
+      (!storeSelectedLayer || storeSelectedLayer.id !== activeObjectLayer.id)
+    ) {
+      selectLayer(activeObjectLayer.id);
     }
+  }, [storeSelectedLayer, activeObjectLayer, selectLayer]);
 
-    selectedObject.setCoords();
+  if (activeCanvasTool === "pen") {
+    return (
+      <div className="flex flex-col h-full bg-[#000000] text-white dark">
+        <div className="flex flex-col gap-6 p-4">
+          <PenProperties />
+          <CanvasProperties />
+        </div>
+      </div>
+    );
+  }
+
+  const handleToggleVisible = () => {
+    if (!selectedLayer || !selectedObject || !fabricCanvas) return;
+    const nextVisible = !selectedLayer.visible;
+    updateLayer(selectedLayer.id, { visible: nextVisible });
+    selectedObject.set("visible", nextVisible);
+    if (nextVisible) fabricCanvas.setActiveObject(selectedObject);
     fabricCanvas.requestRenderAll();
+    commitCanvasHistory(fabricCanvas);
+  };
+
+  const handleToggleLocked = () => {
+    if (!selectedLayer || !selectedObject || !fabricCanvas) return;
+    const nextLocked = !selectedLayer.locked;
+    updateLayer(selectedLayer.id, { locked: nextLocked });
+    selectedObject.set({
+      selectable: true,
+      evented: true,
+      lockMovementX: nextLocked,
+      lockMovementY: nextLocked,
+      lockRotation: nextLocked,
+      lockScalingX: nextLocked,
+      lockScalingY: nextLocked,
+      hasControls: !nextLocked,
+      hoverCursor: nextLocked ? "not-allowed" : "move",
+    });
+    fabricCanvas.setActiveObject(selectedObject);
+    fabricCanvas.requestRenderAll();
+    commitCanvasHistory(fabricCanvas);
+  };
+
+  const handleDelete = () => {
+    if (!selectedLayer) return;
+    deleteLayer(selectedLayer.id);
+    commitCanvasHistory(fabricCanvas);
+  };
+
+  const handleDuplicate = () => {
+    if (!selectedLayer) return;
+    duplicateLayer(selectedLayer.id);
   };
 
   if (!selectedLayer || !selectedObject) {
@@ -79,62 +123,55 @@ export function PropertiesPanel() {
   return (
     <div className="flex flex-col h-full bg-[#000000] text-white dark">
       <div className="flex flex-col gap-8">
-        {/* Alignment Controls */}
+        {/* Arrange Controls */}
         <div className="space-y-4">
           <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest px-1">
-            Alignment
+            Arrange
           </h3>
-          <div className="grid grid-cols-7 gap-1">
+          <div className="grid grid-cols-4 gap-1">
             <Button
-              onClick={() => handleAlign("left")}
+              onClick={handleDuplicate}
               variant="outline"
               size="icon"
               className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
+              title="Duplicate"
             >
-              <AlignLeft className="w-4 h-4" />
+              <Copy className="w-4 h-4" />
             </Button>
             <Button
-              onClick={() => handleAlign("centerH")}
+              onClick={handleToggleVisible}
               variant="outline"
               size="icon"
               className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
+              title={selectedLayer.visible ? "Hide" : "Show"}
             >
-              <AlignCenter className="w-4 h-4" />
+              {selectedLayer.visible ? (
+                <EyeOff className="w-4 h-4" />
+              ) : (
+                <Eye className="w-4 h-4" />
+              )}
             </Button>
             <Button
-              onClick={() => handleAlign("right")}
+              onClick={handleToggleLocked}
               variant="outline"
               size="icon"
               className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
+              title={selectedLayer.locked ? "Unlock" : "Lock"}
             >
-              <AlignRight className="w-4 h-4" />
-            </Button>
-            <div className="flex items-center justify-center">
-              <div className="w-px h-5 bg-white/10" />
-            </div>
-            <Button
-              onClick={() => handleAlign("top")}
-              variant="outline"
-              size="icon"
-              className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
-            >
-              <AlignStartVertical className="w-4 h-4" />
+              {selectedLayer.locked ? (
+                <Unlock className="w-4 h-4" />
+              ) : (
+                <Lock className="w-4 h-4" />
+              )}
             </Button>
             <Button
-              onClick={() => handleAlign("centerV")}
+              onClick={handleDelete}
               variant="outline"
               size="icon"
-              className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
+              className="h-8 w-8 bg-transparent border-transparent hover:bg-red-500/10 text-red-400"
+              title="Delete"
             >
-              <AlignCenterVertical className="w-4 h-4" />
-            </Button>
-            <Button
-              onClick={() => handleAlign("bottom")}
-              variant="outline"
-              size="icon"
-              className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
-            >
-              <AlignEndVertical className="w-4 h-4" />
+              <Trash2 className="w-4 h-4" />
             </Button>
           </div>
         </div>

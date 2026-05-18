@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
+import { commitCanvasHistory } from "@/lib/editor-actions";
 
 export function LayerPanel() {
   const {
@@ -36,7 +37,8 @@ export function LayerPanel() {
 
   const handleToggleVisible = (layerId: string, currentVisible: boolean) => {
     const layer = layers.find((l) => l.id === layerId);
-    updateLayer(layerId, { visible: !currentVisible });
+    const nextVisible = !currentVisible;
+    updateLayer(layerId, { visible: nextVisible });
 
     const { fabricCanvas } = useEditorStore.getState().canvas;
     if (fabricCanvas && layer?.objectId) {
@@ -44,15 +46,18 @@ export function LayerPanel() {
         .getObjects()
         .find((o) => (o as any).name === layer.objectId);
       if (obj) {
-        obj.set("visible", !currentVisible);
+        obj.set("visible", nextVisible);
+        if (nextVisible) fabricCanvas.setActiveObject(obj);
         fabricCanvas.renderAll();
+        commitCanvasHistory(fabricCanvas);
       }
     }
   };
 
   const handleToggleLocked = (layerId: string, currentLocked: boolean) => {
     const layer = layers.find((l) => l.id === layerId);
-    updateLayer(layerId, { locked: !currentLocked });
+    const nextLocked = !currentLocked;
+    updateLayer(layerId, { locked: nextLocked });
 
     const { fabricCanvas } = useEditorStore.getState().canvas;
     if (fabricCanvas && layer?.objectId) {
@@ -60,9 +65,20 @@ export function LayerPanel() {
         .getObjects()
         .find((o) => (o as any).name === layer.objectId);
       if (obj) {
-        obj.set("selectable", currentLocked);
-        obj.set("evented", currentLocked);
+        obj.set({
+          selectable: true,
+          evented: true,
+          lockMovementX: nextLocked,
+          lockMovementY: nextLocked,
+          lockRotation: nextLocked,
+          lockScalingX: nextLocked,
+          lockScalingY: nextLocked,
+          hasControls: !nextLocked,
+          hoverCursor: nextLocked ? "not-allowed" : "move",
+        });
+        fabricCanvas.setActiveObject(obj);
         fabricCanvas.renderAll();
+        commitCanvasHistory(fabricCanvas);
       }
     }
   };
@@ -126,12 +142,24 @@ export function LayerPanel() {
                   handleToggleLocked(layer.id, layer.locked)
                 }
                 onDuplicate={() => duplicateLayer(layer.id)}
-                onDelete={() => deleteLayer(layer.id)}
-                onMoveUp={() => reorderLayer(layer.id, "up")}
-                onMoveDown={() => reorderLayer(layer.id, "down")}
+                onDelete={() => {
+                  deleteLayer(layer.id);
+                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                }}
+                onMoveUp={() => {
+                  reorderLayer(layer.id, "up");
+                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                }}
+                onMoveDown={() => {
+                  reorderLayer(layer.id, "down");
+                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                }}
                 onRename={(name) => renameLayer(layer.id, name)}
                 onReorder={reorderLayer}
-                onMove={moveLayer}
+                onMove={(draggedId, targetId, position) => {
+                  moveLayer(draggedId, targetId, position);
+                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                }}
               />
             ))}
           </div>
@@ -292,9 +320,9 @@ function LayerItem({
             className="p-1.5 hover:bg-white/10 rounded-lg text-gray-400"
           >
             {layer.visible ? (
-              <Eye className="w-3.5 h-3.5" />
-            ) : (
               <EyeOff className="w-3.5 h-3.5" />
+            ) : (
+              <Eye className="w-3.5 h-3.5" />
             )}
           </button>
           <button
@@ -305,9 +333,9 @@ function LayerItem({
             className="p-1.5 hover:bg-white/10 rounded-lg"
           >
             {layer.locked ? (
-              <Lock className="w-3.5 h-3.5 text-[#ec4899]" />
-            ) : (
               <Unlock className="w-3.5 h-3.5 text-gray-500" />
+            ) : (
+              <Lock className="w-3.5 h-3.5 text-[#ec4899]" />
             )}
           </button>
         </div>

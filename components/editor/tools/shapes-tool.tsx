@@ -1,5 +1,6 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import { useEditorStore } from "@/lib/store";
 import {
   Square,
@@ -8,27 +9,20 @@ import {
   Minus,
   Star,
   Hexagon,
-  Search,
-  ChevronRight,
-  ArrowRight,
   MoveRight,
 } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
 import {
   Rect,
   Circle as FabricCircle,
   Triangle as FabricTriangle,
   IText,
   Path,
-  PencilBrush,
+  FabricImage,
   FabricObject,
-  Canvas,
-  Line,
   Polygon,
 } from "fabric"; // Import necessary fabric classes
-import { useState, useEffect } from "react";
-import { cn } from "@/lib/utils";
+
+const EmojiPicker = dynamic(() => import("emoji-picker-react"), { ssr: false });
 
 export function ShapesTool() {
   const { addLayer } = useEditorStore();
@@ -168,6 +162,112 @@ export function ShapesTool() {
     { id: "arrow", icon: MoveRight, label: "Arrow" },
   ];
 
+  const emojis = [
+    "😀",
+    "😂",
+    "😍",
+    "😎",
+    "🤩",
+    "🥳",
+    "🔥",
+    "✨",
+    "💯",
+    "🎉",
+    "❤️",
+    "👍",
+    "👏",
+    "🙌",
+    "🤝",
+    "🚀",
+    "⭐",
+    "🌈",
+    "📌",
+    "✅",
+    "❌",
+    "💡",
+    "📣",
+    "🎯",
+  ];
+
+  const addEmoji = (emoji: string) => {
+    const store = useEditorStore.getState();
+    const fabricCanvas = store.canvas.fabricCanvas;
+    if (!fabricCanvas) {
+      console.warn("No active canvas found. Click on the canvas first.");
+      return;
+    }
+
+    const id = `emoji_${Date.now()}`;
+    const currentDuration = store.videoState.duration;
+    const centerLeft = fabricCanvas.getWidth() / fabricCanvas.getZoom() / 2;
+    const centerTop = fabricCanvas.getHeight() / fabricCanvas.getZoom() / 2;
+    const codepoint = Array.from(emoji)
+      .map((char) => char.codePointAt(0)?.toString(16))
+      .filter(Boolean)
+      .join("-");
+    const emojiUrl = `https://cdn.jsdelivr.net/gh/twitter/twemoji@14.0.2/assets/72x72/${codepoint}.png`;
+
+    FabricImage.fromURL(emojiUrl, { crossOrigin: "anonymous" })
+      .then((emojiImage) => {
+        emojiImage.set({
+          left: centerLeft,
+          top: centerTop,
+          originX: "center",
+          originY: "center",
+          scaleX: 1.2,
+          scaleY: 1.2,
+          name: id,
+        } as any);
+
+        fabricCanvas.add(emojiImage);
+        fabricCanvas.bringObjectToFront(emojiImage);
+        fabricCanvas.setActiveObject(emojiImage);
+        fabricCanvas.requestRenderAll();
+
+        addLayer({
+          type: "sticker",
+          name: `Emoji ${emoji}`,
+          locked: false,
+          visible: true,
+          objectId: id,
+          data: { emoji, url: emojiUrl, isEmoji: true },
+          startTime: 0,
+          duration: Math.max(currentDuration, 3600),
+        });
+
+        requestAnimationFrame(() => fabricCanvas.requestRenderAll());
+      })
+      .catch(() => {
+        const fallbackEmojiText = new IText(emoji, {
+          left: centerLeft,
+          top: centerTop,
+          fontSize: 72,
+          originX: "center",
+          originY: "center",
+          fontFamily:
+            "Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji, sans-serif",
+          editable: false,
+        });
+
+        (fallbackEmojiText as any).name = id;
+        fabricCanvas.add(fallbackEmojiText);
+        fabricCanvas.bringObjectToFront(fallbackEmojiText);
+        fabricCanvas.setActiveObject(fallbackEmojiText);
+        fabricCanvas.requestRenderAll();
+
+        addLayer({
+          type: "sticker",
+          name: `Emoji ${emoji}`,
+          locked: false,
+          visible: true,
+          objectId: id,
+          data: { emoji, isEmoji: true },
+          startTime: 0,
+          duration: Math.max(currentDuration, 3600),
+        });
+      });
+  };
+
   return (
     <div className="flex flex-col h-full bg-[#161616]">
       <div className="px-5 py-6 space-y-6">
@@ -188,6 +288,36 @@ export function ShapesTool() {
                 </span>
               </button>
             ))}
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-1">
+            Emoji
+          </h3>
+          <div className="grid grid-cols-6 gap-2">
+            {emojis.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => addEmoji(emoji)}
+                className="h-11 rounded-lg border border-white/10 bg-[#222] text-2xl transition-colors hover:bg-[#333] hover:border-white/20"
+                title={`Add ${emoji}`}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+          <div className="overflow-hidden rounded-xl border border-white/10">
+            <EmojiPicker
+              lazyLoadEmojis
+              searchDisabled={false}
+              skinTonesDisabled={false}
+              previewConfig={{ showPreview: false }}
+              onEmojiClick={(emojiData: any) => addEmoji(emojiData.emoji)}
+              width="100%"
+              height={360}
+            />
           </div>
         </div>
       </div>

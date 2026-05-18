@@ -27,6 +27,8 @@ export interface Layer {
 export interface EditorPage {
   id: string
   name: string
+  width: number
+  height: number
   layers: Layer[]
 }
 
@@ -91,6 +93,7 @@ export interface EditorState {
   addLayer: (layer: Omit<Layer, 'id'>) => void
   deleteLayer: (layerId: string) => void
   updateLayer: (layerId: string, updates: Partial<Layer>) => void
+  updateLayerData: (layerId: string, data: Record<string, any>) => void
   selectLayer: (layerId: string | null) => void
   duplicateLayer: (layerId: string) => void
   reorderLayer: (layerId: string, direction: 'up' | 'down') => void
@@ -121,6 +124,7 @@ export interface EditorState {
   // Assets tracking
   recentAssets: Asset[]
   addRecentAsset: (asset: Omit<Asset, 'id' | 'timestamp'>) => void
+  removeRecentAsset: (url: string) => void
 }
 
 const firstPageId = `page-${Date.now()}`
@@ -151,7 +155,7 @@ const initialCanvasState: CanvasState = {
   height: 720,
   preset: 'landscape',
   zoom: 1,
-  pages: [{ id: firstPageId, name: 'Page 1', layers: [] }],
+  pages: [{ id: firstPageId, name: 'Page 1', width: 1280, height: 720, layers: [] }],
   activePageId: firstPageId,
   selectedLayerId: null,
   fabricCanvas: null,
@@ -175,9 +179,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   canvas: initialCanvasState,
 
   setCanvas: (updates) =>
-    set((state) => ({
-      canvas: { ...state.canvas, ...updates },
-    })),
+    set((state) => {
+      const nextCanvas = { ...state.canvas, ...updates }
+      const hasDimensionUpdate =
+        typeof updates.width === 'number' || typeof updates.height === 'number'
+
+      if (!hasDimensionUpdate) {
+        return { canvas: nextCanvas }
+      }
+
+      const newPages = state.canvas.pages.map((page) =>
+        page.id === state.canvas.activePageId
+          ? {
+              ...page,
+              width: updates.width ?? page.width,
+              height: updates.height ?? page.height,
+            }
+          : page
+      )
+
+      return {
+        canvas: {
+          ...nextCanvas,
+          pages: newPages,
+        },
+      }
+    }),
 
   renameProject: (name) =>
     set((state) => ({
@@ -215,7 +242,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((state) => {
       const newPages = [
         ...state.canvas.pages,
-        { id: newPageId, name: `Page ${state.canvas.pages.length + 1}`, layers: [] },
+        {
+          id: newPageId,
+          name: `Page ${state.canvas.pages.length + 1}`,
+          width: state.canvas.width,
+          height: state.canvas.height,
+          layers: [],
+        },
       ]
       return {
         canvas: {
@@ -246,9 +279,20 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   setActivePage: (id) => {
-    set((state) => ({
-      canvas: { ...state.canvas, activePageId: id, selectedLayerId: null },
-    }))
+    set((state) => {
+      const targetPage = state.canvas.pages.find((page) => page.id === id)
+      if (!targetPage) return state
+
+      return {
+        canvas: {
+          ...state.canvas,
+          activePageId: id,
+          selectedLayerId: null,
+          width: targetPage.width,
+          height: targetPage.height,
+        },
+      }
+    })
   },
 
   duplicatePage: (id) => {
@@ -269,6 +313,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           ...state.canvas,
           pages: newPages,
           activePageId: newPageId,
+          width: pageToDuplicate.width,
+          height: pageToDuplicate.height,
         },
       }
     })
@@ -410,6 +456,26 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }),
 
+  updateLayerData: (layerId, data) =>
+    set((state) => {
+      const newPages = state.canvas.pages.map((p) =>
+        p.id === state.canvas.activePageId
+          ? {
+              ...p,
+              layers: p.layers.map((l) =>
+                l.id === layerId
+                  ? { ...l, data: { ...(l.data || {}), ...data } }
+                  : l,
+              ),
+            }
+          : p
+      )
+
+      return {
+        canvas: { ...state.canvas, pages: newPages },
+      }
+    }),
+
   selectLayer: (layerId) =>
     set((state) => ({
       canvas: { ...state.canvas, selectedLayerId: layerId },
@@ -423,8 +489,38 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const layerToDuplicate = activePage.layers.find((l) => l.id === layerId)
     if (!layerToDuplicate) return
 
+    const sourceObject = state.canvas.fabricCanvas
+      ?.getObjects()
+      .find((object) => (object as any).name === layerToDuplicate.objectId)
+
+    if (layerToDuplicate.objectId && !sourceObject) return
+
     const newId = `layer-${Date.now()}-${Math.random()}`
-    const duplicated = { ...layerToDuplicate, id: newId, name: `${layerToDuplicate.name} copy` }
+    const newObjectId = layerToDuplicate.objectId
+      ? `${layerToDuplicate.objectId}_copy_${Date.now()}`
+      : undefined
+    const duplicated = {
+      ...layerToDuplicate,
+      id: newId,
+      objectId: newObjectId,
+      name: `${layerToDuplicate.name} copy`,
+    }
+
+    if (sourceObject && state.canvas.fabricCanvas && newObjectId) {
+      const fabricCanvas = state.canvas.fabricCanvas
+      Promise.resolve((sourceObject as any).clone()).then((cloned: any) => {
+        cloned.set({
+          left: (sourceObject.left || 0) + 24,
+          top: (sourceObject.top || 0) + 24,
+          name: newObjectId,
+        })
+        fabricCanvas.add(cloned)
+        fabricCanvas.setActiveObject(cloned)
+        cloned.setCoords()
+        fabricCanvas.requestRenderAll()
+        get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
+      })
+    }
 
     const newPages = state.canvas.pages.map((p) =>
       p.id === state.canvas.activePageId ? { ...p, layers: [...p.layers, duplicated] } : p
@@ -692,6 +788,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const newAssets = [newAsset, ...state.recentAssets.filter(a => a.url !== asset.url)].slice(0, 20)
     return { recentAssets: newAssets }
   }),
+  removeRecentAsset: (url) => set((state) => ({
+    recentAssets: state.recentAssets.filter((asset) => asset.url !== url),
+  })),
 
   recalculateTotalDuration: () => {
     const state = get()

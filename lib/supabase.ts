@@ -11,6 +11,9 @@ const getSupabaseUrl = () => {
 
 const supabaseUrl = getSupabaseUrl();
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || 'placeholder'
+const hasSupabaseConfig =
+  Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL?.startsWith('http')) &&
+  Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
 
 export const supabase = createClient(supabaseUrl, supabaseKey, {
   auth: {
@@ -196,6 +199,10 @@ export async function uploadGlobalAsset(
 }
 
 export async function getGlobalAssets(type?: string) {
+  if (!hasSupabaseConfig) {
+    return [];
+  }
+
   let query = supabase
     .from('assets')
     .select('*')
@@ -209,7 +216,7 @@ export async function getGlobalAssets(type?: string) {
   const { data, error } = await query;
 
   if (error) {
-    console.error('Error fetching global assets:', error);
+    console.warn('Global assets unavailable:', error.message || error);
     return [];
   }
   return data || [];
