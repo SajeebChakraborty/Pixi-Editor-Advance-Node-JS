@@ -23,7 +23,7 @@ export const addMediaFromUrl = async (
     if (existingCanvas) return existingCanvas;
 
     const startedAt = Date.now();
-    const timeoutMs = 2500;
+    const timeoutMs = 10000;
 
     while (Date.now() - startedAt < timeoutMs) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -317,10 +317,10 @@ export const addMediaFromUrl = async (
       const imgWidth = loadedEl.naturalWidth;
       const imgHeight = loadedEl.naturalHeight;
       const currentLayers = useEditorStore.getState().getLayers();
+      const hasImageLayer = currentLayers.some((layer: any) => layer.type === "image");
       const shouldAutoResizeCanvasToImage =
         !silent &&
-        isLocalUrl &&
-        currentLayers.length === 0 &&
+        !hasImageLayer &&
         Number.isFinite(imgWidth) &&
         Number.isFinite(imgHeight) &&
         imgWidth > 0 &&
@@ -334,7 +334,7 @@ export const addMediaFromUrl = async (
       const targetHeight = shouldAutoResizeCanvasToImage ? imgHeight : baseHeight;
       const scale = shouldAutoResizeCanvasToImage
         ? 1
-        : Math.min((targetWidth * 0.9) / imgWidth, (targetHeight * 0.9) / imgHeight) || 1;
+        : Math.max(targetWidth / imgWidth, targetHeight / imgHeight) || 1;
       const objectId = forceObjectId || `img_${Date.now()}`;
 
       const fabricImg = new fabric.FabricImage(loadedEl, {

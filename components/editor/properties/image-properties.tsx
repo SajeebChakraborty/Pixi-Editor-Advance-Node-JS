@@ -12,7 +12,6 @@ import {
   RotateCcw,
   RotateCw,
   SlidersHorizontal,
-  Sparkles,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -181,6 +180,14 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
 
   const setObjectProps = (props: Record<string, any>) => {
     selectedObject.set(props);
+    selectedObject.setCoords();
+    selectedObject.canvas?.requestRenderAll();
+  };
+
+  const setRotationPreservingCenter = (angle: number) => {
+    const center = selectedObject.getCenterPoint();
+    selectedObject.set({ angle });
+    selectedObject.setPositionByOrigin(center, "center", "center");
     selectedObject.setCoords();
     selectedObject.canvas?.requestRenderAll();
   };
@@ -625,7 +632,7 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
             value={rotation}
             onChange={(value) => {
               setRotation(value);
-              setObjectProps({ angle: value });
+              setRotationPreservingCenter(value);
               commit();
             }}
           />
@@ -655,7 +662,7 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
             onClick={() => {
               const next = (rotation - 90) % 360;
               setRotation(next);
-              setObjectProps({ angle: next });
+              setRotationPreservingCenter(next);
               commit();
             }}
           />
@@ -665,7 +672,7 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
             onClick={() => {
               const next = (rotation + 90) % 360;
               setRotation(next);
-              setObjectProps({ angle: next });
+              setRotationPreservingCenter(next);
               commit();
             }}
           />
@@ -751,7 +758,10 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
           onClick={() => setPresetsOpen((open) => !open)}
           className="group flex w-full items-center justify-between rounded-lg px-1 py-1 text-left transition-colors hover:bg-white/5"
         >
-          <PanelTitle icon={Sparkles} label="Presets" />
+          <PanelTitle
+            iconSrc="https://www.zenbitx.com/email-assets/images/Presets.png"
+            label="Presets"
+          />
           <ChevronDown
             className={cn(
               "h-4 w-4 text-gray-500 transition-transform group-hover:text-white",
@@ -925,15 +935,21 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
 
 function PanelTitle({
   icon: Icon,
+  iconSrc,
   label,
 }: {
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
+  iconSrc?: string;
   label: string;
 }) {
   return (
     <div className="flex items-center gap-2">
-      <Icon className="h-3.5 w-3.5 text-gray-500" />
-      <h3 className="text-[10px] font-bold uppercase tracking-widest text-gray-500">
+      {iconSrc ? (
+        <img src={iconSrc} alt="" className="h-3.5 w-3.5 object-contain" />
+      ) : Icon ? (
+        <Icon className="h-3.5 w-3.5 text-gray-300" />
+      ) : null}
+      <h3 className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-gray-200">
         {label}
       </h3>
     </div>

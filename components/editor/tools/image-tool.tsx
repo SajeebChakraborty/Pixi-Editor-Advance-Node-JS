@@ -27,6 +27,7 @@ export function ImageTool() {
     getLayers,
     getSelectedLayer,
     removeRecentAsset,
+    addRecentAsset,
   } = useEditorStore();
   const [assets, setAssets] = useState<ImageAsset[]>([]);
   const [isDragging, setIsDragging] = useState(false);
@@ -37,42 +38,127 @@ export function ImageTool() {
     loadImages();
   }, []);
 
-  const processFile = async (file: File) => {
-    if (!file.type.startsWith("image/")) {
-      toast.error("Please upload a valid image file.");
-      return;
+  const readFileAsDataUrl = (file: File): Promise<string> =>
+    new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        const url = event.target?.result as string;
+        if (url) resolve(url);
+        else reject(new Error("Failed to read image file"));
+      };
+      reader.onerror = () => reject(new Error("Error reading file"));
+      reader.readAsDataURL(file);
+    });
+
+  const waitForFabricCanvas = async (timeoutMs = 5000): Promise<boolean> => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const fabricCanvas = useEditorStore.getState().canvas.fabricCanvas;
+      if (fabricCanvas) return true;
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    }
+    return false;
+  };
+
+  const getImageDimensions = (src: string): Promise<{ width: number; height: number }> =>
+    new Promise((resolve, reject) => {
+      const img = new window.Image();
+      img.onload = () => {
+        const width = Number(img.naturalWidth || 0);
+        const height = Number(img.naturalHeight || 0);
+        if (width > 0 && height > 0) resolve({ width, height });
+        else reject(new Error("Invalid image dimensions"));
+      };
+      img.onerror = () => reject(new Error("Failed to load image dimensions"));
+      img.src = src;
+    });
+
+  const processFiles = async (files: File[]) => {
+    if (files.length === 0) return;
+
+    const limitedFiles = files.slice(0, 5);
+    const ignoredCount = files.length - limitedFiles.length;
+
+    if (ignoredCount > 0) {
+      toast.error("You can upload a maximum of 5 images at a time.");
     }
 
+    const validFiles = limitedFiles.filter((file) => file.type.startsWith("image/"));
+    const invalidCount = limitedFiles.length - validFiles.length;
+    if (invalidCount > 0) {
+      toast.error("Some files were skipped because they are not valid images.");
+    }
+
+    if (validFiles.length === 0) return;
+
     setLoading(true);
-    const toastId = toast.loading("Adding image to canvas...");
-    const reader = new FileReader();
+    const toastId = toast.loading(
+      validFiles.length > 1 ? "Uploading images..." : "Adding image to canvas...",
+    );
 
-    reader.onload = async (event) => {
-      const url = event.target?.result as string;
-      if (url) {
-        // Dismiss the loading toast; addImage will show its own success/error toast
-        toast.dismiss(toastId);
-        await addImage(url, file.name);
-      } else {
-        toast.error("Failed to read image file", { id: toastId });
+    try {
+      const urls = await Promise.all(validFiles.map((file) => readFileAsDataUrl(file)));
+      const store = useEditorStore.getState();
+      const layers = store.getLayers();
+      const imageLayers = layers.filter((layer) => layer.type === "image");
+      const fabricCanvas = store.canvas.fabricCanvas;
+      const hasRenderedImageOnCanvas = imageLayers.some((layer) =>
+        Boolean(
+          fabricCanvas
+            ?.getObjects()
+            .some((obj: any) => obj?.name && obj.name === layer.objectId),
+        ),
+      );
+      const shouldAutoAddToCanvas = !hasRenderedImageOnCanvas;
+
+      if (shouldAutoAddToCanvas) {
+        await addImage(urls[0], validFiles[0].name);
       }
-      setLoading(false);
-    };
 
-    reader.onerror = () => {
-      toast.error("Error reading file", { id: toastId });
-      setLoading(false);
-    };
+      for (let i = shouldAutoAddToCanvas ? 1 : 0; i < validFiles.length; i += 1) {
+        addRecentAsset({
+          type: "image",
+          url: urls[i],
+          name: validFiles[i].name,
+        });
+      }
 
-    reader.readAsDataURL(file);
+      if (shouldAutoAddToCanvas) {
+        // Ensure the first uploaded image (auto-added to canvas) is also
+        // present and prioritized in recent uploads.
+        addRecentAsset({
+          type: "image",
+          url: urls[0],
+          name: validFiles[0].name,
+        });
+      }
+
+      toast.dismiss(toastId);
+      if (!shouldAutoAddToCanvas) {
+        toast.success(
+          validFiles.length > 1
+            ? `${validFiles.length} images uploaded to recent uploads.`
+            : "Image uploaded to recent uploads.",
+        );
+      } else if (validFiles.length > 1) {
+        toast.success(
+          `${validFiles.length} images uploaded. First image added to canvas; ${
+            validFiles.length - 1
+          } saved to recent uploads.`,
+        );
+      }
+    } catch (error) {
+      console.error("Error processing image uploads:", error);
+      toast.error("Failed to process uploaded images.", { id: toastId });
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      await processFile(file);
-      e.target.value = "";
-    }
+    const selectedFiles = Array.from(e.target.files || []);
+    await processFiles(selectedFiles);
+    e.target.value = "";
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -89,10 +175,8 @@ export function ImageTool() {
     e.preventDefault();
     setIsDragging(false);
 
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      await processFile(file);
-    }
+    const droppedFiles = Array.from(e.dataTransfer.files || []);
+    await processFiles(droppedFiles);
   };
 
   const loadImages = async () => {
@@ -126,7 +210,7 @@ export function ImageTool() {
   const recentImages = recentAssets
     .filter((asset) => asset.type === "image")
     .filter(recentImageMatchesSearch)
-    .slice(0, 4);
+    .slice(0, 6);
 
   const groupedAssets = assets.reduce<Record<string, ImageAsset[]>>(
     (acc, asset) => {
@@ -151,10 +235,46 @@ export function ImageTool() {
 
   const addImage = async (url: string, name: string = "Image") => {
     try {
-      // Get the store FRESH at call time — not from a closure captured before
-      // any async operations, which could give a stale fabricCanvas reference.
       const store = useEditorStore.getState();
-      await addMediaFromUrl(url, store, "image", false, undefined, name);
+      try {
+        const { width, height } = await getImageDimensions(url);
+        store.setCanvas({ width, height });
+      } catch (dimensionError) {
+        console.warn("Could not infer image dimensions for canvas resize:", dimensionError);
+      }
+
+      // First-time upload can race with initial canvas registration.
+      // Wait for a live fabric canvas and retry a few times before giving up.
+      await waitForFabricCanvas();
+      const imageCountBefore = useEditorStore
+        .getState()
+        .getLayers()
+        .filter((layer) => layer.type === "image").length;
+
+      let added = false;
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await addMediaFromUrl(
+          url,
+          useEditorStore.getState(),
+          "image",
+          false,
+          undefined,
+          name,
+        );
+        const imageCountAfter = useEditorStore
+          .getState()
+          .getLayers()
+          .filter((layer) => layer.type === "image").length;
+        if (imageCountAfter > imageCountBefore) {
+          added = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+
+      if (!added) {
+        throw new Error("Image could not be attached to canvas.");
+      }
     } catch (err) {
       console.error("Error adding image:", err);
       toast.error("Failed to add image.");
@@ -176,9 +296,17 @@ export function ImageTool() {
     }
 
     deleteLayer(selectedLayer.id);
-    const store = useEditorStore.getState();
-    await addMediaFromUrl(url, store, "image", false, undefined, name);
+    await addImage(url, name);
     toast.success("Selected image replaced.");
+  };
+
+  const replaceCanvasImagesFromRecent = async (url: string, name: string) => {
+    const imageLayerIds = getLayers()
+      .filter((layer) => layer.type === "image")
+      .map((layer) => layer.id);
+
+    imageLayerIds.forEach((layerId) => deleteLayer(layerId));
+    await addImage(url, name);
   };
 
   const removeRecentImageFromCanvas = (
@@ -217,6 +345,7 @@ export function ImageTool() {
             ref={fileInputRef}
             type="file"
             accept="image/*"
+            multiple
             onChange={handleFileUpload}
             className="hidden"
           />
@@ -273,7 +402,7 @@ export function ImageTool() {
               {recentImages.map((item) => (
                 <div
                   key={item.id}
-                  onClick={() => addImage(item.url, item.name)}
+                  onClick={() => replaceCanvasImagesFromRecent(item.url, item.name)}
                   className="group relative h-24 rounded-lg overflow-hidden cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
                 >
                   <button

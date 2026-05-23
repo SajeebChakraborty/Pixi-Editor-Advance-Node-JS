@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import * as fabric from "fabric";
 import { useEditorStore, Layer, EditorPage } from "@/lib/store";
-import { Plus, Trash2, Copy, Minus, LayoutGrid } from "lucide-react";
+import { Plus, Trash2, Minus, LayoutGrid } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { VideoPlayerCanvas } from "./video-player-canvas";
@@ -32,7 +32,6 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     setActivePage,
     deletePage,
     addPage,
-    duplicatePage,
     renamePage,
     undo,
     redo,
@@ -50,6 +49,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState("");
+  const drawingRedoStackRef = useRef<fabric.FabricObject[]>([]);
 
   const handleNameClick = () => {
     setTempName(pageName);
@@ -179,6 +179,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       height: pageHeight * zoom,
       // REMOVED backgroundColor so it doesn't cover objects
       selection: !isHandTool,
+      selectionKey: ["ctrlKey", "metaKey"] as any,
       preserveObjectStacking: true,
       hoverCursor: isHandTool ? "grab" : "move",
     });
@@ -399,6 +400,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
           isMarkup: true,
         },
       });
+      drawingRedoStackRef.current = [];
     });
 
     // Smart guides (Canva-like center + object alignment while moving)
@@ -541,10 +543,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       selectLayer(layerId || null);
     };
 
-    const handleSelection = (e: any) => {
-      const selected = e.selected || [];
-      if (selected.length === 1) {
-        syncObjectSelectionToLayer(selected[0]);
+    const handleSelection = () => {
+      const activeObjects = canvas.getActiveObjects() || [];
+      if (activeObjects.length === 1) {
+        syncObjectSelectionToLayer(activeObjects[0]);
       } else {
         selectLayer(null);
       }
@@ -586,11 +588,40 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       if (!target) return;
       const isMarkup = Boolean((target as any).data?.isMarkup);
       if (!isMarkup) return;
+      drawingRedoStackRef.current.push(target);
       runTransientCanvasMutation(() => {
         canvas.remove(target);
       });
       triggerSave({ target });
     };
+
+    const handleDrawingUndo = () => {
+      const markupObjects = canvas
+        .getObjects()
+        .filter((obj: any) => Boolean(obj?.data?.isMarkup));
+      const lastMarkup = markupObjects[markupObjects.length - 1];
+      if (!lastMarkup) return;
+
+      drawingRedoStackRef.current.push(lastMarkup);
+      runTransientCanvasMutation(() => {
+        canvas.remove(lastMarkup);
+      });
+      triggerSave({ target: lastMarkup });
+    };
+
+    const handleDrawingRedo = () => {
+      const redoTarget = drawingRedoStackRef.current.pop();
+      if (!redoTarget) return;
+
+      runTransientCanvasMutation(() => {
+        canvas.add(redoTarget);
+        canvas.bringObjectToFront(redoTarget);
+      });
+      triggerSave({ target: redoTarget });
+    };
+
+    window.addEventListener("editor:drawing-undo", handleDrawingUndo);
+    window.addEventListener("editor:drawing-redo", handleDrawingRedo);
 
     canvas.on("mouse:down", (opt) => {
       const store = useEditorStore.getState();
@@ -614,7 +645,14 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         eraseMarkupAtPointer(opt);
       }
 
-      if (opt.target && store.activeCanvasTool !== "hand" && !isSpacePressed) {
+      const isMultiSelectModifier =
+        Boolean((opt.e as any)?.ctrlKey) || Boolean((opt.e as any)?.metaKey);
+      if (
+        opt.target &&
+        store.activeCanvasTool !== "hand" &&
+        !isSpacePressed &&
+        !isMultiSelectModifier
+      ) {
         syncObjectSelectionToLayer(opt.target);
       }
 
@@ -656,16 +694,19 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       isErasing = false;
       if (isDragging) {
         isDragging = false;
-        canvas.setCursor(isHandTool ? "grab" : "default");
+        const currentTool = useEditorStore.getState().activeCanvasTool;
+        canvas.setCursor(currentTool === "hand" ? "grab" : "default");
       }
     });
 
     return () => {
+      window.removeEventListener("editor:drawing-undo", handleDrawingUndo);
+      window.removeEventListener("editor:drawing-redo", handleDrawingRedo);
       canvas.dispose();
       fabricCanvasRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pageId, pageWidth, pageHeight, zoom, isHandTool]);
+  }, [pageId]);
 
   // Global spacebar listener for panning
   useEffect(() => {
@@ -710,7 +751,9 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     const canvas = fabricCanvasRef.current;
 
     if (!selectedLayerId) {
-      if (canvas.getActiveObjects().length > 0) {
+      // Preserve multi-selection (ActiveSelection) when no single layer is selected.
+      // We intentionally set selectedLayerId to null for multi-select.
+      if (canvas.getActiveObjects().length === 1) {
         canvas.discardActiveObject();
         canvas.requestRenderAll();
       }
@@ -721,7 +764,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       .find((p) => p.id === pageId)
       ?.layers.find((l) => l.id === selectedLayerId);
     if (!layer || !layer.objectId) {
-      if (canvas.getActiveObjects().length > 0) {
+      if (canvas.getActiveObjects().length === 1) {
         canvas.discardActiveObject();
         canvas.requestRenderAll();
       }
@@ -752,6 +795,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
       // Update interactive properties based on tool
       canvas.selection = !isHandTool;
+      (canvas as any).selectionKey = ["ctrlKey", "metaKey"];
       canvas.hoverCursor = isHandTool ? "grab" : "move";
       canvas.defaultCursor = isHandTool ? "grab" : "default";
 
@@ -1135,18 +1179,6 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
               : "opacity-0 translate-x-2 group-hover:opacity-100 group-hover:translate-x-0",
           )}
         >
-          <Button
-            variant="ghost"
-            size="icon"
-            className="h-10 w-10 bg-white shadow-xl rounded-xl text-gray-500 hover:text-[#8b5cf6] hover:bg-[#8b5cf6]/5 border border-gray-100 active:scale-90 transition-all"
-            onClick={(e) => {
-              e.stopPropagation();
-              duplicatePage(pageId);
-            }}
-            title="Duplicate Page"
-          >
-            <Copy className="w-4 h-4" />
-          </Button>
           <Button
             variant="ghost"
             size="icon"

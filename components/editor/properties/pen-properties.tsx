@@ -3,12 +3,20 @@
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
 import { useEditorStore } from "@/lib/store";
-import { Eraser, Pencil } from "lucide-react";
+import { Eraser, Pencil, RotateCcw, RotateCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export function PenProperties() {
   const { penSettings, setPenSettings } = useEditorStore();
   const intensity = Math.round((penSettings.width / 80) * 100);
+
+  const handleDrawingUndo = () => {
+    window.dispatchEvent(new CustomEvent("editor:drawing-undo"));
+  };
+
+  const handleDrawingRedo = () => {
+    window.dispatchEvent(new CustomEvent("editor:drawing-redo"));
+  };
 
   return (
     <div className="space-y-5 rounded-xl border border-white/10 bg-[#111] p-4">
@@ -45,6 +53,25 @@ export function PenProperties() {
         </button>
       </div>
 
+      <div className="grid grid-cols-2 gap-2">
+        <button
+          type="button"
+          onClick={handleDrawingUndo}
+          className="flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#1b1b1b] text-xs font-bold text-gray-300 transition-colors hover:text-white"
+        >
+          <RotateCcw className="h-4 w-4" />
+          Undo
+        </button>
+        <button
+          type="button"
+          onClick={handleDrawingRedo}
+          className="flex h-9 items-center justify-center gap-2 rounded-lg border border-white/10 bg-[#1b1b1b] text-xs font-bold text-gray-300 transition-colors hover:text-white"
+        >
+          <RotateCw className="h-4 w-4" />
+          Redo
+        </button>
+      </div>
+
       <div className="space-y-2">
         <div className="flex items-center justify-between text-[10px] font-bold uppercase text-gray-400">
           <span>Thickness</span>
@@ -63,12 +90,12 @@ export function PenProperties() {
             <span>Intensity</span>
             <span>{intensity}%</span>
           </div>
-          <div className="flex h-8 items-center justify-center">
+          <div className="flex h-10 items-center justify-center">
             <div
-              className="rounded-full"
+              className="rounded-full mb-2"
               style={{
-                width: Math.max(8, penSettings.width * 1.8),
-                height: Math.max(8, penSettings.width * 1.8),
+                width: Math.min(56, Math.max(8, penSettings.width * 0.9)),
+                height: Math.min(56, Math.max(8, penSettings.width * 0.9)),
                 background:
                   penSettings.mode === "eraser" ? "#e5e7eb" : penSettings.color,
                 opacity: penSettings.mode === "eraser" ? 0.9 : 1,

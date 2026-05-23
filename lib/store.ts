@@ -799,9 +799,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   recentAssets: [],
   addRecentAsset: (asset) => set((state) => {
+    const uniqueId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `asset-${crypto.randomUUID()}`
+        : `asset-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
     const newAsset = {
       ...asset,
-      id: `asset-${Date.now()}`,
+      id: uniqueId,
       timestamp: Date.now()
     }
     // Limit to 20 recent assets
