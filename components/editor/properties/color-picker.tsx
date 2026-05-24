@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button";
 interface ColorPickerProps {
   color: string;
   onChange: (color: string) => void;
+  onCommit?: () => void;
   label?: string;
 }
 
@@ -47,7 +48,7 @@ const BRAND_PALETTES = [
   },
 ];
 
-export function ColorPicker({ color, onChange, label }: ColorPickerProps) {
+export function ColorPicker({ color, onChange, onCommit, label }: ColorPickerProps) {
   const [inputValue, setInputValue] = useState(color);
 
   useEffect(() => {
@@ -80,7 +81,13 @@ export function ColorPicker({ color, onChange, label }: ColorPickerProps) {
   };
 
   return (
-    <div className="space-y-4">
+    <div
+      className="space-y-4"
+      onPointerUp={onCommit}
+      onKeyUp={(event) => {
+        if (event.key === "Enter") onCommit?.();
+      }}
+    >
       {label && (
         <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest px-1">
           {label}
@@ -108,6 +115,7 @@ export function ColorPicker({ color, onChange, label }: ColorPickerProps) {
           <Input
             value={inputValue.toUpperCase()}
             onChange={(e) => handleHexChange(e.target.value)}
+            onBlur={onCommit}
             className="h-full bg-transparent border-transparent text-white font-mono text-xs font-bold pl-3 focus-visible:ring-0"
             placeholder="#000000"
           />
@@ -134,7 +142,10 @@ export function ColorPicker({ color, onChange, label }: ColorPickerProps) {
               {palette.colors.map((bc) => (
                 <button
                   key={bc.color}
-                  onClick={() => onChange(bc.color)}
+                  onClick={() => {
+                    onChange(bc.color);
+                    requestAnimationFrame(() => onCommit?.());
+                  }}
                   className={cn(
                     "w-8 h-8 rounded-full ring-2 ring-white/5 cursor-pointer hover:scale-110 active:scale-95 transition-all shadow-lg relative flex items-center justify-center",
                     color.toLowerCase() === bc.color.toLowerCase() &&
@@ -162,7 +173,10 @@ export function ColorPicker({ color, onChange, label }: ColorPickerProps) {
           {PRESET_COLORS.map((c) => (
             <button
               key={c}
-              onClick={() => onChange(c)}
+              onClick={() => {
+                onChange(c);
+                requestAnimationFrame(() => onCommit?.());
+              }}
               className={cn(
                 "w-full aspect-square rounded-lg border border-white/5 cursor-pointer hover:scale-110 active:scale-95 transition-all",
                 color.toLowerCase() === c.toLowerCase() &&

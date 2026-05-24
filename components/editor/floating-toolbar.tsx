@@ -37,12 +37,13 @@ export function FloatingToolbar() {
     setActiveCanvasTool(toolId);
 
     if (!fabricCanvas) return;
+    const { width, height } = useEditorStore.getState().canvas;
+    const center = { left: width / 2, top: height / 2 };
 
     // Bring objects immediately when clicked
     if (toolId === "square") {
       const rect = new Rect({
-        left: fabricCanvas.width ? fabricCanvas.width / 2 : 100,
-        top: fabricCanvas.height ? fabricCanvas.height / 2 : 100,
+        ...center,
         fill: "#8b5cf6",
         width: 100,
         height: 100,
@@ -63,8 +64,7 @@ export function FloatingToolbar() {
       fabricCanvas.setActiveObject(rect);
     } else if (toolId === "circle") {
       const circle = new FabricCircle({
-        left: fabricCanvas.width ? fabricCanvas.width / 2 : 150,
-        top: fabricCanvas.height ? fabricCanvas.height / 2 : 150,
+        ...center,
         fill: "#20B486",
         radius: 50,
         name: `circle_${Date.now()}`,
@@ -82,8 +82,7 @@ export function FloatingToolbar() {
       fabricCanvas.setActiveObject(circle);
     } else if (toolId === "text") {
       const text = new IText("Type something...", {
-        left: fabricCanvas.width ? fabricCanvas.width / 2 : 200,
-        top: fabricCanvas.height ? fabricCanvas.height / 2 : 200,
+        ...center,
         fontSize: 40,
         fill: "#000000",
         fontFamily: "Inter",
@@ -105,8 +104,7 @@ export function FloatingToolbar() {
     } else if (toolId === "arrow") {
       const arrowPath = "M 0 0 L 100 0 M 100 0 L 85 -10 M 100 0 L 85 10";
       const arrow = new Path(arrowPath, {
-        left: fabricCanvas.width ? fabricCanvas.width / 2 : 200,
-        top: fabricCanvas.height ? fabricCanvas.height / 2 : 200,
+        ...center,
         stroke: "#000000",
         strokeWidth: 4,
         fill: "transparent",

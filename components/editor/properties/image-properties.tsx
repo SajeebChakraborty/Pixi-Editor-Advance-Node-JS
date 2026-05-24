@@ -9,9 +9,11 @@ import {
   FlipHorizontal,
   FlipVertical,
   ImageOff,
+  Lock,
   RotateCcw,
   RotateCw,
   SlidersHorizontal,
+  Unlock,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -84,7 +86,7 @@ const areCropsEqual = (a: CropState | null, b: CropState | null) => {
 };
 
 export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
-  const { getSelectedLayer, updateLayerData } = useEditorStore();
+  const { getSelectedLayer, updateLayerData, setCanvas } = useEditorStore();
   const selectedLayer = getSelectedLayer();
   const layerData = selectedLayer?.data || {};
 
@@ -182,6 +184,25 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
     selectedObject.set(props);
     selectedObject.setCoords();
     selectedObject.canvas?.requestRenderAll();
+  };
+
+  const syncArtboardToSelectedImage = () => {
+    const nextWidth = Math.max(1, Math.round(selectedObject.getScaledWidth()));
+    const nextHeight = Math.max(1, Math.round(selectedObject.getScaledHeight()));
+
+    selectedObject.set({
+      left: 0,
+      top: 0,
+      originX: "left",
+      originY: "top",
+    });
+    selectedObject.setCoords();
+    selectedObject.canvas?.setActiveObject(selectedObject);
+    setCanvas({ width: nextWidth, height: nextHeight });
+    setWidth(nextWidth);
+    setHeight(nextHeight);
+    setX(0);
+    setY(0);
   };
 
   const setRotationPreservingCenter = (angle: number) => {
@@ -428,7 +449,7 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
       selectedObject.set({ scaleY: scaleX });
       setHeight(Math.round((selectedObject.height || 1) * scaleX));
     }
-    selectedObject.setCoords();
+    syncArtboardToSelectedImage();
     selectedObject.canvas?.requestRenderAll();
     commit();
   };
@@ -442,7 +463,7 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
       selectedObject.set({ scaleX: scaleY });
       setWidth(Math.round((selectedObject.width || 1) * scaleY));
     }
-    selectedObject.setCoords();
+    syncArtboardToSelectedImage();
     selectedObject.canvas?.requestRenderAll();
     commit();
   };
@@ -597,14 +618,23 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
           <button
             onClick={() => setRatioLocked(!ratioLocked)}
             className={cn(
-              "mt-5 h-10 w-9 rounded-lg text-xs font-bold transition-colors",
+              "mt-5 flex h-10 w-10 items-center justify-center rounded-xl border transition-all",
               ratioLocked
-                ? "bg-[#8b5cf6] text-white"
-                : "bg-[#222] text-gray-500 hover:text-white",
+                ? "border-[#8b5cf6]/50 bg-[#8b5cf6] text-white shadow-lg shadow-purple-500/20"
+                : "border-white/10 bg-[#222] text-gray-400 hover:border-white/20 hover:text-white",
             )}
-            title={ratioLocked ? "Unlock ratio" : "Lock ratio"}
+            title={
+              ratioLocked ? "Aspect ratio locked" : "Aspect ratio unlocked"
+            }
+            aria-label={
+              ratioLocked ? "Unlock aspect ratio" : "Lock aspect ratio"
+            }
           >
-            {ratioLocked ? "L" : "U"}
+            {ratioLocked ? (
+              <Lock className="h-4 w-4" />
+            ) : (
+              <Unlock className="h-4 w-4" />
+            )}
           </button>
           <Field label="Height" value={height} onChange={handleHeightChange} />
         </div>
@@ -965,6 +995,27 @@ function Field({
   value: number;
   onChange: (value: number) => void;
 }) {
+  const [draft, setDraft] = useState(String(Math.round(value || 0)));
+  const [isFocused, setIsFocused] = useState(false);
+
+  useEffect(() => {
+    if (!isFocused) {
+      setDraft(String(Math.round(Number.isFinite(value) ? value : 0)));
+    }
+  }, [isFocused, value]);
+
+  const commitDraft = () => {
+    const trimmed = draft.trim();
+    const next = Number(trimmed);
+
+    if (trimmed === "" || !Number.isFinite(next)) {
+      setDraft(String(Math.round(Number.isFinite(value) ? value : 0)));
+      return;
+    }
+
+    onChange(Math.round(next));
+  };
+
   return (
     <label className="space-y-1.5">
       <span className="pl-1 text-[10px] font-bold uppercase text-gray-400">
@@ -972,8 +1023,22 @@ function Field({
       </span>
       <Input
         type="number"
-        value={Number.isFinite(value) ? Math.round(value) : 0}
-        onChange={(event) => onChange(parseInt(event.target.value, 10) || 0)}
+        value={draft}
+        onFocus={() => setIsFocused(true)}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={() => {
+          commitDraft();
+          setIsFocused(false);
+        }}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.currentTarget.blur();
+          }
+          if (event.key === "Escape") {
+            setDraft(String(Math.round(Number.isFinite(value) ? value : 0)));
+            event.currentTarget.blur();
+          }
+        }}
         className="h-10 border-transparent bg-[#222] font-mono text-xs font-bold text-white focus:border-[#8b5cf6]"
       />
     </label>

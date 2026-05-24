@@ -8,11 +8,19 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { VideoPlayerCanvas } from "./video-player-canvas";
 import { ContextMenu } from "./context-menu";
+import {
+  EDITOR_DRAG_MIME_TYPE,
+  addEmojiToCanvas,
+  addShapeToCanvas,
+} from "./tools/shapes-tool";
 
 interface PageCanvasProps {
   pageId: string;
   index: number;
 }
+
+const MIN_PASTEBOARD_MARGIN = 360;
+const MAX_PASTEBOARD_MARGIN = 900;
 
 function PageCanvas({ pageId, index }: PageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -43,6 +51,12 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   const pageName = page?.name || `Page ${index + 1}`;
   const pageWidth = page?.width ?? width;
   const pageHeight = page?.height ?? height;
+  const pasteboardMargin = Math.max(
+    MIN_PASTEBOARD_MARGIN,
+    Math.min(MAX_PASTEBOARD_MARGIN, Math.max(pageWidth, pageHeight) * 0.5),
+  );
+  const pasteboardWidth = pageWidth + pasteboardMargin * 2;
+  const pasteboardHeight = pageHeight + pasteboardMargin * 2;
 
   const isActive = activePageId === pageId;
   const isHandTool = activeCanvasTool === "hand";
@@ -50,6 +64,43 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState("");
   const drawingRedoStackRef = useRef<fabric.FabricObject[]>([]);
+
+  const handleToolDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    const payloadText = event.dataTransfer.getData(EDITOR_DRAG_MIME_TYPE);
+    if (!payloadText || !fabricCanvasRef.current) return false;
+
+    event.preventDefault();
+    event.stopPropagation();
+
+    let payload:
+      | { kind: "shape"; type: string }
+      | { kind: "emoji"; emoji: string };
+
+    try {
+      payload = JSON.parse(payloadText);
+    } catch {
+      return true;
+    }
+
+    const canvas = fabricCanvasRef.current;
+    if (!isActive) {
+      setActivePage(pageId);
+      setFabricCanvas(canvas);
+    } else {
+      setFabricCanvas(canvas);
+    }
+
+    const pointer = canvas.getPointer(event.nativeEvent as any);
+    const position = { left: pointer.x, top: pointer.y };
+
+    if (payload.kind === "shape") {
+      addShapeToCanvas(payload.type, position);
+    } else if (payload.kind === "emoji") {
+      addEmojiToCanvas(payload.emoji, position);
+    }
+
+    return true;
+  };
 
   const handleNameClick = () => {
     setTempName(pageName);
@@ -175,14 +226,20 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     if (!canvasRef.current || fabricCanvasRef.current) return;
 
     const canvas = new fabric.Canvas(canvasRef.current, {
-      width: pageWidth * zoom,
-      height: pageHeight * zoom,
+      width: pasteboardWidth * zoom,
+      height: pasteboardHeight * zoom,
       // REMOVED backgroundColor so it doesn't cover objects
       selection: !isHandTool,
       selectionKey: ["ctrlKey", "metaKey"] as any,
       preserveObjectStacking: true,
       hoverCursor: isHandTool ? "grab" : "move",
     });
+    (canvas as any).artboardExportBounds = {
+      left: pasteboardMargin * zoom,
+      top: pasteboardMargin * zoom,
+      width: pageWidth * zoom,
+      height: pageHeight * zoom,
+    };
 
     fabricCanvasRef.current = canvas;
     const currentEditorState = useEditorStore.getState();
@@ -341,7 +398,14 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     );
 
     fabricCanvasRef.current = canvas;
-    canvas.setZoom(zoom);
+    canvas.setViewportTransform([
+      zoom,
+      0,
+      0,
+      zoom,
+      pasteboardMargin * zoom,
+      pasteboardMargin * zoom,
+    ]);
 
     if (isActive) {
       setFabricCanvas(canvas);
@@ -405,46 +469,81 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     // Smart guides (Canva-like center + object alignment while moving)
     const SMART_GUIDE_THRESHOLD = 6;
-    const smartGuides: fabric.Line[] = [];
+    let guideAnimationFrame: number | null = null;
+    let pendingGuide: { x: number | null; y: number | null } | null = null;
+    let isGuideVisible = false;
+    let guideCandidates:
+      | {
+          target: fabric.FabricObject;
+          xs: number[];
+          ys: number[];
+        }
+      | null = null;
 
     const clearSmartGuides = () => {
-      if (!smartGuides.length) return;
-      runTransientCanvasMutation(() => {
-        while (smartGuides.length) {
-          const guide = smartGuides.pop();
-          if (guide) canvas.remove(guide);
-        }
-      });
+      if (!pendingGuide && guideAnimationFrame === null && !isGuideVisible) {
+        return;
+      }
+
+      pendingGuide = null;
+      if (guideAnimationFrame !== null) {
+        cancelAnimationFrame(guideAnimationFrame);
+        guideAnimationFrame = null;
+      }
+      if (canvas.contextTop) {
+        canvas.clearContext(canvas.contextTop);
+      }
+      isGuideVisible = false;
     };
 
-    const drawSmartGuide = (
-      orientation: "vertical" | "horizontal",
-      at: number,
-    ) => {
-      const line =
-        orientation === "vertical"
-          ? new fabric.Line([at, 0, at, canvas.getHeight()], {
-              stroke: "#8b5cf6",
-              strokeWidth: 1,
-              strokeDashArray: [6, 4],
-              selectable: false,
-              evented: false,
-              excludeFromExport: true,
-              name: "smart_guide_v",
-            } as any)
-          : new fabric.Line([0, at, canvas.getWidth(), at], {
-              stroke: "#8b5cf6",
-              strokeWidth: 1,
-              strokeDashArray: [6, 4],
-              selectable: false,
-              evented: false,
-              excludeFromExport: true,
-              name: "smart_guide_h",
-            } as any);
+    const getCanvasLogicalSize = () => ({
+      width: pageWidth,
+      height: pageHeight,
+      zoom: canvas.getZoom() || 1,
+    });
 
-      smartGuides.push(line);
-      canvas.add(line);
-      canvas.bringObjectToFront(line);
+    const drawSmartGuides = (x: number | null, y: number | null) => {
+      pendingGuide = { x, y };
+      if (guideAnimationFrame !== null) return;
+
+      guideAnimationFrame = requestAnimationFrame(() => {
+        guideAnimationFrame = null;
+        const guide = pendingGuide;
+        const ctx = canvas.contextTop;
+        if (!guide || !ctx) return;
+
+        const { width: logicalWidth, height: logicalHeight, zoom } =
+          getCanvasLogicalSize();
+        const transform = canvas.viewportTransform || [1, 0, 0, 1, 0, 0];
+
+        canvas.clearContext(ctx);
+        isGuideVisible = true;
+        ctx.save();
+        ctx.transform(
+          transform[0],
+          transform[1],
+          transform[2],
+          transform[3],
+          transform[4],
+          transform[5],
+        );
+        ctx.strokeStyle = "#8b5cf6";
+        ctx.lineWidth = 1 / zoom;
+        ctx.setLineDash([6 / zoom, 4 / zoom]);
+        ctx.beginPath();
+
+        if (guide.x !== null) {
+          ctx.moveTo(guide.x, 0);
+          ctx.lineTo(guide.x, logicalHeight);
+        }
+        if (guide.y !== null) {
+          ctx.moveTo(0, guide.y);
+          ctx.lineTo(logicalWidth, guide.y);
+        }
+
+        ctx.stroke();
+        ctx.restore();
+      });
     };
 
     const getBoundsAxes = (obj: fabric.FabricObject) => {
@@ -459,14 +558,19 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       return { left, right, centerX, top, bottom, centerY };
     };
 
-    canvas.on("object:moving", (evt) => {
-      const movingObject = evt.target as fabric.FabricObject | undefined;
-      if (!movingObject || isTransientCropObject(movingObject) || isTransientGuideObject(movingObject)) {
-        return;
+    const resetGuideCandidates = () => {
+      guideCandidates = null;
+    };
+
+    const getGuideCandidates = (movingObject: fabric.FabricObject) => {
+      if (guideCandidates?.target === movingObject) {
+        return guideCandidates;
       }
 
-      const candidateXs: number[] = [canvas.getWidth() / 2];
-      const candidateYs: number[] = [canvas.getHeight() / 2];
+      const { width: logicalWidth, height: logicalHeight } =
+        getCanvasLogicalSize();
+      const xs: number[] = [logicalWidth / 2];
+      const ys: number[] = [logicalHeight / 2];
 
       canvas.getObjects().forEach((obj) => {
         if (
@@ -477,9 +581,22 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
           return;
         }
         const axes = getBoundsAxes(obj);
-        candidateXs.push(axes.left, axes.centerX, axes.right);
-        candidateYs.push(axes.top, axes.centerY, axes.bottom);
+        xs.push(axes.left, axes.centerX, axes.right);
+        ys.push(axes.top, axes.centerY, axes.bottom);
       });
+
+      guideCandidates = { target: movingObject, xs, ys };
+      return guideCandidates;
+    };
+
+    canvas.on("object:moving", (evt) => {
+      const movingObject = evt.target as fabric.FabricObject | undefined;
+      if (!movingObject || isTransientCropObject(movingObject) || isTransientGuideObject(movingObject)) {
+        return;
+      }
+
+      const { xs: candidateXs, ys: candidateYs } =
+        getGuideCandidates(movingObject);
 
       const movingAxes = getBoundsAxes(movingObject);
       const movingXPoints = [movingAxes.left, movingAxes.centerX, movingAxes.right];
@@ -524,16 +641,17 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         movingObject.setCoords();
       }
 
-      clearSmartGuides();
       if (snappedX !== null || snappedY !== null) {
-        runTransientCanvasMutation(() => {
-          if (snappedX !== null) drawSmartGuide("vertical", snappedX);
-          if (snappedY !== null) drawSmartGuide("horizontal", snappedY);
-        });
+        drawSmartGuides(snappedX, snappedY);
+      } else {
+        clearSmartGuides();
       }
     });
 
-    canvas.on("object:modified", () => clearSmartGuides());
+    canvas.on("object:modified", () => {
+      resetGuideCandidates();
+      clearSmartGuides();
+    });
 
     // Selection sync
     const syncObjectSelectionToLayer = (obj: any) => {
@@ -555,6 +673,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     canvas.on("selection:created", handleSelection);
     canvas.on("selection:updated", handleSelection);
     canvas.on("selection:cleared", () => {
+      resetGuideCandidates();
       clearSmartGuides();
       selectLayer(null);
     });
@@ -690,6 +809,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     });
 
     canvas.on("mouse:up", () => {
+      resetGuideCandidates();
       clearSmartGuides();
       isErasing = false;
       if (isDragging) {
@@ -702,6 +822,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     return () => {
       window.removeEventListener("editor:drawing-undo", handleDrawingUndo);
       window.removeEventListener("editor:drawing-redo", handleDrawingRedo);
+      clearSmartGuides();
       canvas.dispose();
       fabricCanvasRef.current = null;
     };
@@ -790,8 +911,24 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   useEffect(() => {
     if (fabricCanvasRef.current) {
       const canvas = fabricCanvasRef.current;
-      canvas.setDimensions({ width: pageWidth * zoom, height: pageHeight * zoom });
-      canvas.setZoom(zoom);
+      canvas.setDimensions({
+        width: pasteboardWidth * zoom,
+        height: pasteboardHeight * zoom,
+      });
+      canvas.setViewportTransform([
+        zoom,
+        0,
+        0,
+        zoom,
+        pasteboardMargin * zoom,
+        pasteboardMargin * zoom,
+      ]);
+      (canvas as any).artboardExportBounds = {
+        left: pasteboardMargin * zoom,
+        top: pasteboardMargin * zoom,
+        width: pageWidth * zoom,
+        height: pageHeight * zoom,
+      };
 
       // Update interactive properties based on tool
       canvas.selection = !isHandTool;
@@ -815,7 +952,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
       canvas.renderAll();
     }
-  }, [pageWidth, pageHeight, zoom, isHandTool, activeCanvasTool, pageId, penSettings]);
+  }, [pageWidth, pageHeight, pasteboardWidth, pasteboardHeight, pasteboardMargin, zoom, isHandTool, activeCanvasTool, pageId, penSettings]);
 
   // Video Sync Logic
   const {
@@ -1140,14 +1277,14 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       <div
         ref={containerRef}
         className={cn(
-          "relative bg-white shadow-[0_20px_50px_rgba(0,0,0,0.1)] transition-all duration-300 group",
+          "relative transition-all duration-300 group",
           isActive
-            ? "ring-[6px] ring-[#8b5cf6]/10 border-[#8b5cf6]/30"
+            ? "border-[#8b5cf6]/30"
             : "hover:shadow-2xl border-transparent",
         )}
         style={{
-          width: pageWidth * zoom,
-          height: pageHeight * zoom,
+          width: pasteboardWidth * zoom,
+          height: pasteboardHeight * zoom,
           overflow: "visible",
           zIndex: 1,
         }}
@@ -1159,7 +1296,31 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
             setFabricCanvas(fabricCanvasRef.current);
           }
         }}
+        onDragOver={(event) => {
+          if (event.dataTransfer.types.includes(EDITOR_DRAG_MIME_TYPE)) {
+            event.preventDefault();
+            event.stopPropagation();
+            event.dataTransfer.dropEffect = "copy";
+          }
+        }}
+        onDrop={(event) => {
+          handleToolDrop(event);
+        }}
       >
+        <div
+          className={cn(
+            "absolute bg-white shadow-[0_20px_50px_rgba(0,0,0,0.1)] transition-all duration-300",
+            isActive
+              ? "ring-[6px] ring-[#8b5cf6]/10"
+              : "group-hover:shadow-2xl",
+          )}
+          style={{
+            left: pasteboardMargin * zoom,
+            top: pasteboardMargin * zoom,
+            width: pageWidth * zoom,
+            height: pageHeight * zoom,
+          }}
+        />
         <canvas ref={canvasRef} />
 
         {contextMenu && (
@@ -1173,11 +1334,15 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         {/* Floating Page Controls */}
         <div
           className={cn(
-            "absolute -right-14 top-0 flex flex-col gap-2 transition-all duration-300",
+            "absolute flex flex-col gap-2 transition-all duration-300",
             isActive
               ? "opacity-100 translate-x-0"
               : "opacity-0 translate-x-2 group-hover:opacity-100 group-hover:translate-x-0",
           )}
+          style={{
+            left: (pasteboardMargin + pageWidth) * zoom + 14,
+            top: pasteboardMargin * zoom,
+          }}
         >
           <Button
             variant="ghost"
@@ -1195,7 +1360,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       </div>
 
       {/* Art board size label (Now at bottom) */}
-      <div className="flex flex-col items-center gap-1 mt-6">
+      <div
+        className="flex flex-col items-center gap-1"
+        style={{ marginTop: -pasteboardMargin * zoom + 24 }}
+      >
         {isEditingName ? (
           <div className="flex items-center bg-white px-3 py-1 rounded-full shadow-sm border border-gray-100 gap-1">
             <input

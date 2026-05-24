@@ -66,6 +66,22 @@ export function TopBar() {
     return `${safeName || "pixizen-export"}-${width}x${height}.${extension}`;
   };
 
+  const getArtboardDataUrl = (
+    format: "png" | "jpeg",
+    multiplier = 1,
+    quality = 0.92,
+  ) => {
+    if (!fabricCanvas) return "";
+
+    const crop = (fabricCanvas as any).artboardExportBounds;
+    return fabricCanvas.toDataURL({
+      format,
+      quality,
+      multiplier,
+      ...(crop || {}),
+    });
+  };
+
   const handleExportImage = async (
     format: "png" | "jpeg",
     multiplier = 1,
@@ -76,11 +92,7 @@ export function TopBar() {
     try {
       fabricCanvas.discardActiveObject();
       fabricCanvas.requestRenderAll();
-      const dataUrl = fabricCanvas.toDataURL({
-        format,
-        quality,
-        multiplier,
-      });
+      const dataUrl = getArtboardDataUrl(format, multiplier, quality);
       const link = document.createElement("a");
       link.href = dataUrl;
       link.download = exportFileName(format === "png" ? "png" : "jpg");
@@ -198,7 +210,7 @@ export function TopBar() {
         if (!uploadResult.success) throw new Error(uploadResult.error);
         finalUrl = uploadResult.url!;
       } else {
-        const dataUrl = fabricCanvas.toDataURL({ format: "png", multiplier: 1 });
+        const dataUrl = getArtboardDataUrl("png", 1);
         const uploadResult = await uploadToDashboardAction(dataUrl, 'image');
         if (!uploadResult.success) throw new Error(uploadResult.error);
         finalUrl = uploadResult.url!;
@@ -233,7 +245,7 @@ export function TopBar() {
 
       const category = prompt("Enter category:", "General") || "General";
 
-      const thumb = fabricCanvas.toDataURL({ format: "png", multiplier: 0.2 });
+      const thumb = getArtboardDataUrl("png", 0.2);
 
       const template = TemplateManager.createTemplateFromCanvas(
         fabricCanvas,

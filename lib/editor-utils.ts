@@ -41,9 +41,9 @@ export const addMediaFromUrl = async (
     }
     return;
   }
-  const liveZoom = Math.max(0.01, Number(useEditorStore.getState().canvas.zoom || 1));
-  const baseWidth = Math.max(1, (fabricCanvas.getWidth?.() || storeWidth || 1280) / liveZoom);
-  const baseHeight = Math.max(1, (fabricCanvas.getHeight?.() || storeHeight || 720) / liveZoom);
+  const latestCanvasState = useEditorStore.getState().canvas;
+  const baseWidth = Math.max(1, latestCanvasState.width || storeWidth || 1280);
+  const baseHeight = Math.max(1, latestCanvasState.height || storeHeight || 720);
 
   const isVideo = type === "video" || url.match(/\.(mp4|webm|mov)(\?.*)?$/i);
 
@@ -416,9 +416,10 @@ export const addMediaFromUrl = async (
 };
 
 export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric.Canvas, objectId: string) => {
+  const { width, height } = useEditorStore.getState().canvas;
   const textBox = new fabric.IText(text, {
-    left: fabricCanvas.width! / 2,
-    top: fabricCanvas.height! / 2,
+    left: width / 2,
+    top: height / 2,
     fill: "#000000",
     fontFamily: "Roboto",
     fontSize: 40,

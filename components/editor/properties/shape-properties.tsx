@@ -4,19 +4,10 @@ import { useState, useEffect } from "react";
 import { FabricObject } from "fabric";
 import { Slider } from "@/components/ui/slider";
 import { Input } from "@/components/ui/input";
-import {
-  Link2,
-  Pipette,
-  Copy,
-  ChevronDown,
-  AlignLeft,
-  AlignCenter,
-  AlignRight,
-  List,
-  ListOrdered,
-} from "lucide-react";
+import { Link2, Ban } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { ColorPicker } from "./color-picker";
+import { commitCanvasHistory } from "@/lib/editor-actions";
 
 interface ShapePropertiesProps {
   selectedObject: FabricObject;
@@ -31,15 +22,72 @@ export function ShapeProperties({ selectedObject }: ShapePropertiesProps) {
   const [rotation, setRotation] = useState(0);
   const [ratioLocked, setRatioLocked] = useState(true);
   const [colorTab, setColorTab] = useState<"fill" | "stroke">("fill");
+  const [fillColor, setFillColor] = useState("#C4C4C4");
+  const [strokeColor, setStrokeColor] = useState("#000000");
+  const [hasFill, setHasFill] = useState(true);
+  const [hasStroke, setHasStroke] = useState(false);
+  const [strokeWidth, setStrokeWidth] = useState(0);
+
+  const isImageLike =
+    selectedObject.type === "image" ||
+    selectedObject.type === "video" ||
+    selectedObject.type === "fabricimage";
+  const canEditFillStroke = !isImageLike;
+
+  const normalizeColor = (value: unknown, fallback: string) => {
+    if (typeof value !== "string") return fallback;
+    if (/^#([a-fA-F0-9]{3}|[a-fA-F0-9]{6})$/.test(value)) return value;
+
+    const rgb = value.match(
+      /^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})/i,
+    );
+    if (!rgb) return fallback;
+
+    return `#${[rgb[1], rgb[2], rgb[3]]
+      .map((channel) =>
+        Math.max(0, Math.min(255, Number(channel)))
+          .toString(16)
+          .padStart(2, "0"),
+      )
+      .join("")}`;
+  };
+
+  const isVisiblePaint = (value: unknown) =>
+    Boolean(value && value !== "transparent" && value !== "rgba(0,0,0,0)");
+
+  const getFirstPaintableObject = () => {
+    if (selectedObject.type !== "group") return selectedObject as any;
+    return (selectedObject as any)
+      .getObjects?.()
+      ?.find((obj: any) => obj.type !== "image" && obj.type !== "video");
+  };
 
   useEffect(() => {
     const updateLocalState = () => {
+      const paintSource = getFirstPaintableObject();
       setWidth(Math.round(selectedObject.getScaledWidth()));
       setHeight(Math.round(selectedObject.getScaledHeight()));
       setX(Math.round(selectedObject.left || 0));
       setY(Math.round(selectedObject.top || 0));
       setRotation(Math.round(selectedObject.angle || 0));
       setOpacity(Math.round((selectedObject.opacity || 1) * 100));
+
+      if (paintSource) {
+        const nextFillVisible = isVisiblePaint(paintSource.fill);
+        const nextStrokeWidth = Number(paintSource.strokeWidth || 0);
+        const nextStrokeVisible =
+          isVisiblePaint(paintSource.stroke) && nextStrokeWidth > 0;
+
+        setHasFill(nextFillVisible);
+        setHasStroke(nextStrokeVisible);
+        setStrokeWidth(nextStrokeWidth);
+        if (nextFillVisible) {
+          setFillColor((prev) => normalizeColor(paintSource.fill, prev));
+        }
+        if (isVisiblePaint(paintSource.stroke)) {
+          setStrokeColor((prev) => normalizeColor(paintSource.stroke, prev));
+        }
+      }
     };
 
     updateLocalState();
@@ -107,27 +155,79 @@ export function ShapeProperties({ selectedObject }: ShapePropertiesProps) {
     selectedObject.canvas?.requestRenderAll();
   };
 
-  const applyColor = (color: string) => {
-    const isGroup = selectedObject.type === "group";
-
-    if (isGroup) {
-      const group = selectedObject as any;
-      group.forEachObject((obj: any) => {
-        if (colorTab === "fill") {
-          obj.set({ fill: color });
-        } else {
-          obj.set({ stroke: color, strokeWidth: 2 });
-        }
+  const updatePaintableObjects = (updater: (obj: any) => void) => {
+    if (selectedObject.type === "group") {
+      (selectedObject as any).forEachObject((obj: any) => {
+        if (obj.type !== "image" && obj.type !== "video") updater(obj);
       });
     } else {
-      if (colorTab === "fill") {
-        selectedObject.set({ fill: color });
-      } else {
-        selectedObject.set({ stroke: color, strokeWidth: 4 });
-      }
+      updater(selectedObject as any);
     }
+
     selectedObject.set({ dirty: true });
+    selectedObject.setCoords();
     selectedObject.canvas?.requestRenderAll();
+  };
+
+  const applyColor = (color: string) => {
+    if (!canEditFillStroke) return;
+
+    updatePaintableObjects((obj) => {
+      if (colorTab === "fill") {
+        obj.set({ fill: color });
+      } else {
+        obj.set({
+          stroke: color,
+          strokeWidth: Math.max(Number(obj.strokeWidth || 0), 2),
+        });
+      }
+    });
+
+    if (colorTab === "fill") {
+      setFillColor(color);
+      setHasFill(true);
+    } else {
+      setStrokeColor(color);
+      setHasStroke(true);
+      setStrokeWidth((prev) => Math.max(prev, 2));
+    }
+  };
+
+  const togglePaint = (kind: "fill" | "stroke", enabled: boolean) => {
+    if (!canEditFillStroke) return;
+
+    updatePaintableObjects((obj) => {
+      if (kind === "fill") {
+        obj.set({ fill: enabled ? fillColor : "transparent" });
+      } else {
+        obj.set({
+          stroke: enabled ? strokeColor : "transparent",
+          strokeWidth: enabled ? Math.max(strokeWidth || 0, 2) : 0,
+        });
+      }
+    });
+
+    if (kind === "fill") {
+      setHasFill(enabled);
+    } else {
+      setHasStroke(enabled);
+      setStrokeWidth(enabled ? Math.max(strokeWidth || 0, 2) : 0);
+    }
+
+    commitCanvasHistory(selectedObject.canvas);
+  };
+
+  const handleStrokeWidthChange = (val: number) => {
+    const nextWidth = Math.max(0, Math.min(100, Math.round(val)));
+    setStrokeWidth(nextWidth);
+    setHasStroke(nextWidth > 0);
+
+    updatePaintableObjects((obj) => {
+      obj.set({
+        stroke: nextWidth > 0 ? strokeColor : "transparent",
+        strokeWidth: nextWidth,
+      });
+    });
   };
 
   return (
@@ -143,12 +243,7 @@ export function ShapeProperties({ selectedObject }: ShapePropertiesProps) {
             <span className="text-[10px] font-bold text-gray-400 pl-1 uppercase tracking-tight">
               Width
             </span>
-            <Input
-              type="number"
-              value={width}
-              onChange={(e) => handleWidthChange(parseInt(e.target.value) || 0)}
-              className="h-11 bg-[#111] border-transparent text-white text-[12px] font-bold rounded-xl focus:border-[#8b5cf6] placeholder:text-gray-700"
-            />
+            <DraftNumberInput value={width} onCommit={handleWidthChange} />
           </div>
           <button
             onClick={() => setRatioLocked(!ratioLocked)}
@@ -165,14 +260,7 @@ export function ShapeProperties({ selectedObject }: ShapePropertiesProps) {
             <span className="text-[10px] font-bold text-gray-400 pl-1 uppercase tracking-tight">
               Height
             </span>
-            <Input
-              type="number"
-              value={height}
-              onChange={(e) =>
-                handleHeightChange(parseInt(e.target.value) || 0)
-              }
-              className="h-11 bg-[#111] border-transparent text-white text-[12px] font-bold rounded-xl focus:border-[#8b5cf6] placeholder:text-gray-700"
-            />
+            <DraftNumberInput value={height} onCommit={handleHeightChange} />
           </div>
         </div>
 
@@ -182,36 +270,23 @@ export function ShapeProperties({ selectedObject }: ShapePropertiesProps) {
             <span className="text-[10px] font-bold text-gray-400 pl-1 uppercase tracking-tight">
               X
             </span>
-            <Input
-              type="number"
-              value={x}
-              onChange={(e) => handleXChange(parseInt(e.target.value) || 0)}
-              className="h-11 bg-[#111] border-transparent text-white text-[12px] font-bold rounded-xl focus:border-[#8b5cf6]"
-            />
+            <DraftNumberInput value={x} onCommit={handleXChange} />
           </div>
           <div className="flex-1 space-y-2">
             <span className="text-[10px] font-bold text-gray-400 pl-1 uppercase tracking-tight">
               Y
             </span>
-            <Input
-              type="number"
-              value={y}
-              onChange={(e) => handleYChange(parseInt(e.target.value) || 0)}
-              className="h-11 bg-[#111] border-transparent text-white text-[12px] font-bold rounded-xl focus:border-[#8b5cf6]"
-            />
+            <DraftNumberInput value={y} onCommit={handleYChange} />
           </div>
           <div className="flex-1 space-y-2">
             <span className="text-[10px] font-bold text-gray-400 pl-1 uppercase tracking-tight">
               Rotation
             </span>
             <div className="relative">
-              <Input
-                type="number"
+              <DraftNumberInput
                 value={rotation}
-                onChange={(e) =>
-                  handleRotationChange(parseInt(e.target.value) || 0)
-                }
-                className="h-11 bg-[#111] border-transparent text-white text-[12px] font-bold rounded-xl focus:border-[#8b5cf6] pr-6"
+                onCommit={handleRotationChange}
+                className="pr-6"
               />
               <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 text-[10px]">
                 °
@@ -250,42 +325,178 @@ export function ShapeProperties({ selectedObject }: ShapePropertiesProps) {
       </div>
 
       {/* Color Panel */}
-      <div className="space-y-5">
-        <div className="flex bg-[#111] p-1 rounded-xl gap-1 mx-1">
-          <button
-            onClick={() => setColorTab("fill")}
-            className={cn(
-              "flex-1 py-2 text-[10px] font-black uppercase rounded-lg transition-all flex items-center justify-center gap-2",
-              colorTab === "fill"
-                ? "bg-white text-black shadow-lg"
-                : "text-gray-500 hover:text-gray-300",
-            )}
-          >
-            <div className="w-3 h-3 rounded-sm bg-current" /> Fill
-          </button>
-          <button
-            onClick={() => setColorTab("stroke")}
-            className={cn(
-              "flex-1 py-2 text-[10px] font-black uppercase rounded-lg transition-all flex items-center justify-center gap-2",
-              colorTab === "stroke"
-                ? "bg-white text-black shadow-lg"
-                : "text-gray-500 hover:text-gray-300",
-            )}
-          >
-            <div className="w-3 h-3 rounded-sm border-2 border-current" />{" "}
-            Stroke
-          </button>
-        </div>
+      {canEditFillStroke ? (
+        <div className="space-y-5">
+          <div className="flex bg-[#111] p-1 rounded-xl gap-1 mx-1">
+            <button
+              onClick={() => setColorTab("fill")}
+              className={cn(
+                "flex-1 py-2 text-[10px] font-black uppercase rounded-lg transition-all flex items-center justify-center gap-2",
+                colorTab === "fill"
+                  ? "bg-white text-black shadow-lg"
+                  : "text-gray-500 hover:text-gray-300",
+              )}
+            >
+              <div
+                className={cn(
+                  "w-3.5 h-3.5 rounded-sm border border-black/10",
+                  !hasFill && "bg-transparent",
+                )}
+                style={{ backgroundColor: hasFill ? fillColor : "transparent" }}
+              >
+                {!hasFill && <Ban className="w-3 h-3 text-current" />}
+              </div>
+              Fill
+            </button>
+            <button
+              onClick={() => setColorTab("stroke")}
+              className={cn(
+                "flex-1 py-2 text-[10px] font-black uppercase rounded-lg transition-all flex items-center justify-center gap-2",
+                colorTab === "stroke"
+                  ? "bg-white text-black shadow-lg"
+                  : "text-gray-500 hover:text-gray-300",
+              )}
+            >
+              <div
+                className="w-3.5 h-3.5 rounded-sm border-2"
+                style={{
+                  borderColor: hasStroke ? strokeColor : "currentColor",
+                }}
+              >
+                {!hasStroke && <Ban className="w-3 h-3 text-current" />}
+              </div>
+              Stroke
+            </button>
+          </div>
 
-        <ColorPicker
-          color={
-            ((colorTab === "fill"
-              ? selectedObject.fill
-              : selectedObject.stroke) as string) || "#000000"
-          }
-          onChange={applyColor}
-        />
-      </div>
+          <div className="grid grid-cols-2 gap-2 px-1">
+            <button
+              onClick={() => togglePaint(colorTab, true)}
+              className={cn(
+                "h-9 rounded-lg border text-[10px] font-black uppercase transition-all",
+                (colorTab === "fill" ? hasFill : hasStroke)
+                  ? "bg-white text-black border-white"
+                  : "bg-[#111] text-gray-400 border-white/10 hover:text-white",
+              )}
+            >
+              Color
+            </button>
+            <button
+              onClick={() => togglePaint(colorTab, false)}
+              className={cn(
+                "h-9 rounded-lg border text-[10px] font-black uppercase transition-all flex items-center justify-center gap-2",
+                !(colorTab === "fill" ? hasFill : hasStroke)
+                  ? "bg-white text-black border-white"
+                  : "bg-[#111] text-gray-400 border-white/10 hover:text-white",
+              )}
+            >
+              <Ban className="w-3.5 h-3.5" />
+              None
+            </button>
+          </div>
+
+          {colorTab === "stroke" && (
+            <div className="space-y-3 px-1">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                  Stroke width
+                </span>
+                <Input
+                  type="number"
+                  value={strokeWidth}
+                  min={0}
+                  max={100}
+                  onChange={(event) =>
+                    handleStrokeWidthChange(parseInt(event.target.value) || 0)
+                  }
+                  onBlur={() => commitCanvasHistory(selectedObject.canvas)}
+                  className="h-8 w-16 bg-[#111] border-white/10 text-white text-xs font-bold rounded-lg"
+                />
+              </div>
+              <Slider
+                value={[strokeWidth]}
+                min={0}
+                max={40}
+                step={1}
+                onValueChange={(val) => handleStrokeWidthChange(val[0])}
+                onValueCommit={() => commitCanvasHistory(selectedObject.canvas)}
+              />
+            </div>
+          )}
+
+          <ColorPicker
+            color={colorTab === "fill" ? fillColor : strokeColor}
+            onChange={applyColor}
+            onCommit={() => commitCanvasHistory(selectedObject.canvas)}
+          />
+        </div>
+      ) : (
+        <div className="rounded-xl border border-white/10 bg-[#111] p-4">
+          <p className="text-[10px] font-black uppercase tracking-widest text-gray-500">
+            Image sticker
+          </p>
+          <p className="mt-2 text-xs font-medium text-gray-400">
+            Fill and stroke are unavailable for this object.
+          </p>
+        </div>
+      )}
     </div>
+  );
+}
+
+function DraftNumberInput({
+  value,
+  onCommit,
+  className,
+}: {
+  value: number;
+  onCommit: (value: number) => void;
+  className?: string;
+}) {
+  const [draft, setDraft] = useState(String(Math.round(value || 0)));
+  const [isFocused, setIsFocused] = useState(false);
+
+  useEffect(() => {
+    if (!isFocused) {
+      setDraft(String(Math.round(Number.isFinite(value) ? value : 0)));
+    }
+  }, [isFocused, value]);
+
+  const commitDraft = () => {
+    const trimmed = draft.trim();
+    const next = Number(trimmed);
+
+    if (trimmed === "" || !Number.isFinite(next)) {
+      setDraft(String(Math.round(Number.isFinite(value) ? value : 0)));
+      return;
+    }
+
+    onCommit(Math.round(next));
+  };
+
+  return (
+    <Input
+      type="number"
+      value={draft}
+      onFocus={() => setIsFocused(true)}
+      onChange={(event) => setDraft(event.target.value)}
+      onBlur={() => {
+        commitDraft();
+        setIsFocused(false);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") {
+          event.currentTarget.blur();
+        }
+        if (event.key === "Escape") {
+          setDraft(String(Math.round(Number.isFinite(value) ? value : 0)));
+          event.currentTarget.blur();
+        }
+      }}
+      className={cn(
+        "h-11 bg-[#111] border-transparent text-white text-[12px] font-bold rounded-xl focus:border-[#8b5cf6] placeholder:text-gray-700",
+        className,
+      )}
+    />
   );
 }

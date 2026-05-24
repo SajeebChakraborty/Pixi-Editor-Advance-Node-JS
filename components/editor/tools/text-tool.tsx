@@ -107,10 +107,11 @@ export function TextTool() {
     const fontWeight = options.fontWeight || "normal";
     const fill = options.fill || "#ffffff";
     const fontSize = options.fontSize || 40;
+    const { width, height } = store.canvas;
 
     const textBox = new IText(text, {
-      left: fabricCanvas.width! / fabricCanvas.getZoom() / 2,
-      top: fabricCanvas.height! / fabricCanvas.getZoom() / 2,
+      left: width / 2,
+      top: height / 2,
       fill,
       fontFamily,
       fontWeight,
