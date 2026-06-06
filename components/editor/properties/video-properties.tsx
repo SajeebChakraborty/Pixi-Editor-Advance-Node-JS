@@ -5,19 +5,40 @@ import { FabricImage } from "fabric";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
-import { Play, Pause, Volume2, VolumeX } from "lucide-react";
+import {
+  Play,
+  Pause,
+  RotateCcw,
+  Scissors,
+  Volume2,
+  VolumeX,
+} from "lucide-react";
 import { useEditorStore } from "@/lib/store";
+import { setVideoOverlayOpacity } from "@/lib/video-overlay";
 
 interface VideoPropertiesProps {
   selectedObject: FabricImage;
 }
 
+const finiteMediaTime = (value: unknown, fallback = 0) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+};
+
 export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
-  const { setVideoState } = useEditorStore();
+  const {
+    videoState,
+    setVideoState,
+    getSelectedLayer,
+    updateLayer,
+  } = useEditorStore();
+  const selectedLayer = getSelectedLayer();
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const [speed, setSpeed] = useState(1);
-  const [opacity, setOpacity] = useState(selectedObject.opacity || 1);
+  const [opacity, setOpacity] = useState(
+    Number((selectedObject as any)._videoOpacity ?? 1),
+  );
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
@@ -32,54 +53,104 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   useEffect(() => {
     if (!videoEl) return;
 
-    const updateState = () => {
+    const updatePlaybackState = () => {
       setIsPlaying(!videoEl.paused);
       setVolume(videoEl.volume);
       setSpeed(videoEl.playbackRate);
-      setCurrentTime(videoEl.currentTime);
-      // Retrieve custom trim data if saved
-      // @ts-ignore
-      setTrimStart(selectedObject.trimStart || 0);
-      // @ts-ignore
-      setTrimEnd(selectedObject.trimEnd || videoEl.duration);
-      if (!duration) setDuration(videoEl.duration);
     };
 
-    const handleTimeUpdate = () => setCurrentTime(videoEl.currentTime);
+    const handleTimeUpdate = () => {
+      const clipStart = Math.max(0, Number(selectedLayer?.mediaStart || 0));
+      const clipEnd =
+        clipStart + Math.max(0.1, Number(selectedLayer?.duration || 0.1));
+      setCurrentTime(
+        Math.min(clipEnd, Math.max(clipStart, videoEl.currentTime)),
+      );
+    };
     const handleMetadata = () => {
-      setDuration(videoEl.duration);
-      // @ts-ignore
-      if (!selectedObject.trimEnd) setTrimEnd(videoEl.duration);
+      const nextDuration = finiteMediaTime(videoEl.duration);
+      setDuration((previous) =>
+        Math.abs(previous - nextDuration) < 0.001 ? previous : nextDuration,
+      );
     };
 
-    videoEl.addEventListener("play", updateState);
-    videoEl.addEventListener("pause", updateState);
+    videoEl.addEventListener("play", updatePlaybackState);
+    videoEl.addEventListener("pause", updatePlaybackState);
     videoEl.addEventListener("timeupdate", handleTimeUpdate);
     videoEl.addEventListener("loadedmetadata", handleMetadata);
 
-    // Initial sync
-    updateState();
+    updatePlaybackState();
+    handleMetadata();
 
     return () => {
-      videoEl.removeEventListener("play", updateState);
-      videoEl.removeEventListener("pause", updateState);
+      videoEl.removeEventListener("play", updatePlaybackState);
+      videoEl.removeEventListener("pause", updatePlaybackState);
       videoEl.removeEventListener("timeupdate", handleTimeUpdate);
       videoEl.removeEventListener("loadedmetadata", handleMetadata);
     };
-  }, [selectedObject, videoEl]);
+  }, [
+    selectedObject,
+    videoEl,
+    selectedLayer?.id,
+    selectedLayer?.mediaStart,
+    selectedLayer?.duration,
+  ]);
+
+  const sourceDuration = finiteMediaTime(
+    selectedLayer?.data?.sourceDuration,
+    finiteMediaTime(duration, finiteMediaTime(videoEl?.duration)),
+  );
+  const committedTrimStart = finiteMediaTime(selectedLayer?.mediaStart);
+  const committedTrimEnd = Math.min(
+    sourceDuration,
+    committedTrimStart +
+      Math.max(
+        0.1,
+        finiteMediaTime(selectedLayer?.duration, sourceDuration),
+      ),
+  );
+  const hasPendingTrim =
+    Math.abs(trimStart - committedTrimStart) >= 0.01 ||
+    Math.abs(trimEnd - committedTrimEnd) >= 0.01;
+
+  useEffect(() => {
+    if (!selectedLayer || sourceDuration <= 0) return;
+
+    setTrimStart((previous) =>
+      Math.abs(previous - committedTrimStart) < 0.001
+        ? previous
+        : committedTrimStart,
+    );
+    setTrimEnd((previous) =>
+      Math.abs(previous - committedTrimEnd) < 0.001
+        ? previous
+        : committedTrimEnd,
+    );
+    setCurrentTime((previous) => {
+      const next = Math.min(
+        committedTrimEnd,
+        Math.max(committedTrimStart, previous || videoEl?.currentTime || 0),
+      );
+      return Math.abs(previous - next) < 0.001 ? previous : next;
+    });
+  }, [
+    selectedLayer?.id,
+    committedTrimStart,
+    committedTrimEnd,
+    sourceDuration,
+    videoEl,
+  ]);
 
   const togglePlay = () => {
-    if (!videoEl) return;
-    if (isPlaying) videoEl.pause();
-    else videoEl.play();
-    setVideoState({ isPlaying: !isPlaying });
+    setVideoState({ isPlaying: !videoState.isPlaying });
   };
 
   const handleSeek = (val: number) => {
-    if (!videoEl) return;
-    videoEl.currentTime = val;
+    const timelineTime =
+      Number(selectedLayer?.startTime || 0) +
+      Math.max(0, val - Number(selectedLayer?.mediaStart || 0));
     setCurrentTime(val);
-    setVideoState({ currentTime: val });
+    setVideoState({ currentTime: timelineTime, isPlaying: false });
   };
 
   const handleVolume = (val: number) => {
@@ -98,20 +169,82 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   };
 
   const handleOpacity = (val: number) => {
-    selectedObject.set("opacity", val);
+    setVideoOverlayOpacity(selectedObject as any, val);
     setOpacity(val);
-    selectedObject.canvas?.requestRenderAll();
   };
 
-  const handleTrimChange = (start: number, end: number) => {
-    setTrimStart(start);
-    setTrimEnd(end);
-    // Save to object
-    // @ts-ignore
-    selectedObject.trimStart = start;
-    // @ts-ignore
-    selectedObject.trimEnd = end;
+  const normalizeTrimRange = (start: number, end: number) => {
+    const availableDuration = Math.max(0.1, sourceDuration);
+    const safeStart = Math.min(
+      Math.max(0, start),
+      Math.max(0, availableDuration - 0.1),
+    );
+    const safeEnd = Math.min(
+      availableDuration,
+      Math.max(safeStart + 0.1, end),
+    );
+
+    return { safeStart, safeEnd };
   };
+
+  const previewTrimRange = (
+    start: number,
+    end: number,
+    previewTime: number,
+  ) => {
+    const { safeStart, safeEnd } = normalizeTrimRange(start, end);
+
+    setTrimStart(safeStart);
+    setTrimEnd(safeEnd);
+    setCurrentTime(Math.min(safeEnd, Math.max(safeStart, previewTime)));
+
+    if (videoEl) {
+      videoEl.pause();
+      try {
+        videoEl.currentTime = Math.min(
+          safeEnd,
+          Math.max(safeStart, previewTime),
+        );
+      } catch {
+        // Metadata sync will seek to the preview frame once it is available.
+      }
+    }
+
+    if (videoState.isPlaying) {
+      setVideoState({ isPlaying: false });
+    }
+  };
+
+  const applyTrimRange = (start: number, end: number) => {
+    if (!selectedLayer) return;
+
+    const { safeStart, safeEnd } = normalizeTrimRange(start, end);
+    const clipTimelineStart = Math.max(0, Number(selectedLayer.startTime || 0));
+
+    setTrimStart(safeStart);
+    setTrimEnd(safeEnd);
+    setCurrentTime(safeStart);
+    updateLayer(selectedLayer.id, {
+      mediaStart: safeStart,
+      duration: safeEnd - safeStart,
+    });
+    setVideoState({
+      currentTime: clipTimelineStart,
+      isPlaying: false,
+    });
+
+    if (videoEl) {
+      videoEl.pause();
+      try {
+        videoEl.currentTime = safeStart;
+      } catch {
+        // Canvas synchronization retries when metadata is ready.
+      }
+    }
+  };
+
+  const applyTrim = () => applyTrimRange(trimStart, trimEnd);
+  const resetTrim = () => applyTrimRange(0, sourceDuration);
 
   const formatTime = (seconds: number) => {
     if (!seconds && seconds !== 0) return "0:00";
@@ -140,12 +273,16 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
             )}
           </Button>
           <div className="flex-1 space-y-1">
-            <Slider
-              value={[currentTime]}
-              max={duration || 100}
+            <input
+              type="range"
+              value={finiteMediaTime(currentTime)}
+              min={trimStart}
+              max={Math.max(trimStart + 0.1, trimEnd || duration || 0.1)}
               step={0.1}
-              onValueChange={(vals) => handleSeek(vals[0])}
-              className="cursor-pointer"
+              onChange={(event) =>
+                handleSeek(finiteMediaTime(event.currentTarget.value))
+              }
+              className="w-full cursor-pointer accent-[#8b5cf6]"
             />
             <div className="flex justify-between text-[10px] text-gray-500 font-mono">
               <span>{formatTime(currentTime)}</span>
@@ -206,9 +343,18 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
 
       {/* Trimming */}
       <div className="space-y-3 pt-2 border-t border-white/5">
-        <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest px-1">
-          Trim Video
-        </h3>
+        <div className="flex items-center justify-between gap-3 px-1">
+          <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">
+            Trim Video
+          </h3>
+          <button
+            onClick={resetTrim}
+            className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-gray-500 hover:text-white"
+          >
+            <RotateCcw className="w-3 h-3" />
+            Reset
+          </button>
+        </div>
 
         <div className="space-y-4">
           <div className="space-y-1">
@@ -218,13 +364,20 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
                 {formatTime(trimStart)}
               </span>
             </div>
-            <Slider
-              value={[trimStart]}
-              max={duration}
+            <input
+              type="range"
+              value={trimStart}
+              min={0}
+              max={Math.max(0.1, trimEnd - 0.1)}
               step={0.1}
-              onValueChange={(vals) =>
-                handleTrimChange(Math.min(vals[0], trimEnd), trimEnd)
+              onChange={(event) =>
+                previewTrimRange(
+                  finiteMediaTime(event.currentTarget.value),
+                  trimEnd,
+                  finiteMediaTime(event.currentTarget.value),
+                )
               }
+              className="w-full accent-[#8b5cf6]"
             />
           </div>
 
@@ -235,14 +388,36 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
                 {formatTime(trimEnd)}
               </span>
             </div>
-            <Slider
-              value={[trimEnd]}
-              max={duration}
+            <input
+              type="range"
+              value={trimEnd}
+              min={Math.min(sourceDuration, trimStart + 0.1)}
+              max={Math.max(0.1, sourceDuration)}
               step={0.1}
-              onValueChange={(vals) =>
-                handleTrimChange(trimStart, Math.max(vals[0], trimStart))
+              onChange={(event) =>
+                previewTrimRange(
+                  trimStart,
+                  finiteMediaTime(event.currentTarget.value),
+                  finiteMediaTime(event.currentTarget.value),
+                )
               }
+              className="w-full accent-[#8b5cf6]"
             />
+          </div>
+
+          <div className="space-y-2">
+            <Button
+              onClick={applyTrim}
+              disabled={!selectedLayer || !hasPendingTrim}
+              className="w-full bg-[#8b5cf6] hover:bg-[#7c3aed] disabled:bg-white/10 disabled:text-gray-500"
+            >
+              <Scissors className="mr-2 h-4 w-4" />
+              Trim to {formatTime(trimEnd - trimStart)}
+            </Button>
+            <p className="text-[10px] leading-relaxed text-gray-500">
+              Drag to preview frames. Trim applies the selected range to the
+              timeline without modifying the source file.
+            </p>
           </div>
         </div>
       </div>

@@ -155,6 +155,13 @@ const clampLayerToVideoBounds = (
   }
 }
 
+const valuesEqual = (left: unknown, right: unknown) => {
+  if (Object.is(left, right)) return true
+  return typeof left === "number" && typeof right === "number"
+    ? Math.abs(left - right) < 0.0001
+    : false
+}
+
 // Initial canvas state
 const initialCanvasState: CanvasState = {
   name: 'Our Masterpiece',
@@ -419,8 +426,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         const activePage = state.canvas.pages.find((p) => p.id === state.canvas.activePageId)
         const layer = activePage?.layers.find((l) => l.id === layerId)
         if (layer && layer.objectId) {
+          const objectStillUsed = activePage?.layers.some(
+            (candidate) =>
+              candidate.id !== layerId &&
+              candidate.objectId === layer.objectId,
+          )
           const obj = fabricCanvas.getObjects().find((o: any) => o.name === layer.objectId)
-          if (obj) {
+          if (obj && !objectStillUsed) {
+            ;(obj as any)._disposeVideo?.()
             fabricCanvas.remove(obj)
             fabricCanvas.requestRenderAll()
           }
@@ -448,6 +461,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   updateLayer: (layerId, updates) =>
     set((state) => {
       const activePage = state.canvas.pages.find((p) => p.id === state.canvas.activePageId)
+      const currentLayer = activePage?.layers.find((layer) => layer.id === layerId)
+      if (
+        !currentLayer ||
+        Object.entries(updates).every(([key, value]) =>
+          valuesEqual(currentLayer[key as keyof Layer], value)
+        )
+      ) {
+        return state
+      }
+
       const maxVideoEnd = activePage
         ? activePage.layers
             .filter((l) => l.type === "video")
@@ -793,9 +816,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   videoEditorOpen: false,
   videoState: initialVideoState,
   setVideoEditorOpen: (open) => set({ videoEditorOpen: open }),
-  setVideoState: (updates) => set((state) => ({ 
-    videoState: { ...state.videoState, ...updates } 
-  })),
+  setVideoState: (updates) =>
+    set((state) => {
+      const changed = Object.entries(updates).some(([key, value]) =>
+        !valuesEqual(state.videoState[key as keyof VideoState], value)
+      )
+      if (!changed) return state
+
+      return {
+        videoState: { ...state.videoState, ...updates },
+      }
+    }),
 
   recentAssets: [],
   addRecentAsset: (asset) => set((state) => {
@@ -820,6 +851,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const state = get()
     const layers = state.getLayers()
     if (layers.length === 0) {
+      if (
+        valuesEqual(state.videoState.duration, 30) &&
+        valuesEqual(state.videoState.endTime, 30)
+      ) {
+        return
+      }
       set({ videoState: { ...state.videoState, duration: 30, endTime: 30 } })
       return
     }
@@ -836,7 +873,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const boundedEnd = maxVideoEnd > 0 ? Math.min(maxEndTime, maxVideoEnd) : maxEndTime
     // Minimum duration of 5 seconds
     const finalDuration = Math.max(5, boundedEnd)
-    
+
+    if (
+      valuesEqual(state.videoState.duration, finalDuration) &&
+      valuesEqual(state.videoState.endTime, finalDuration)
+    ) {
+      return
+    }
+
     set((state) => ({
       videoState: {
         ...state.videoState,

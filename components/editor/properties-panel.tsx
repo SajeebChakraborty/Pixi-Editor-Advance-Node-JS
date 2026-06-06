@@ -23,6 +23,7 @@ import { VideoProperties } from "./properties/video-properties";
 import { PenProperties } from "./properties/pen-properties";
 import { Button } from "@/components/ui/button";
 import { commitCanvasHistory } from "@/lib/editor-actions";
+import { setVideoOverlayVisibility } from "@/lib/video-overlay";
 
 export function PropertiesPanel() {
   const {
@@ -83,10 +84,15 @@ export function PropertiesPanel() {
 
   const handleToggleVisible = () => {
     if (!selectedLayer || !selectedObject || !fabricCanvas) return;
-    const nextVisible = !selectedLayer.visible;
+    const nextVisible = selectedLayer.visible === false;
+
     updateLayer(selectedLayer.id, { visible: nextVisible });
     selectedObject.set("visible", nextVisible);
-    if (nextVisible) fabricCanvas.setActiveObject(selectedObject);
+    setVideoOverlayVisibility(selectedObject as any, nextVisible);
+
+    if (nextVisible) {
+      fabricCanvas.setActiveObject(selectedObject);
+    }
     fabricCanvas.requestRenderAll();
     commitCanvasHistory(fabricCanvas);
   };
@@ -251,10 +257,21 @@ export function PropertiesPanel() {
                 onClick={handleToggleVisible}
                 variant="outline"
                 size="icon"
-                className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
-                title={selectedLayer.visible ? "Hide" : "Show"}
+                className={
+                  selectedLayer.visible === false
+                    ? "h-8 w-8 border-amber-400/50 bg-amber-400/10 text-amber-300 hover:bg-amber-400/20"
+                    : "h-8 w-8 border-transparent bg-transparent text-gray-400 hover:bg-white/10 hover:text-white"
+                }
+                title={
+                  selectedLayer.visible === false
+                    ? "Layer hidden - click to show"
+                    : "Layer visible - click to hide"
+                }
+                aria-label={
+                  selectedLayer.visible === false ? "Show layer" : "Hide layer"
+                }
               >
-                {selectedLayer.visible ? (
+                {selectedLayer.visible === false ? (
                   <EyeOff className="w-4 h-4" />
                 ) : (
                   <Eye className="w-4 h-4" />
@@ -264,13 +281,24 @@ export function PropertiesPanel() {
                 onClick={handleToggleLocked}
                 variant="outline"
                 size="icon"
-                className="h-8 w-8 bg-transparent border-transparent hover:bg-white/10 text-gray-400"
-                title={selectedLayer.locked ? "Unlock" : "Lock"}
+                className={
+                  selectedLayer.locked
+                    ? "h-8 w-8 border-violet-400/60 bg-violet-500/20 text-violet-200 hover:bg-violet-500/30"
+                    : "h-8 w-8 border-transparent bg-transparent text-gray-400 hover:bg-white/10 hover:text-white"
+                }
+                title={
+                  selectedLayer.locked
+                    ? "Layer locked - click to unlock"
+                    : "Layer unlocked - click to lock"
+                }
+                aria-label={
+                  selectedLayer.locked ? "Unlock layer" : "Lock layer"
+                }
               >
                 {selectedLayer.locked ? (
-                  <Unlock className="w-4 h-4" />
+                  <Lock className="w-4 h-4 fill-current/20" />
                 ) : (
-                  <Lock className="w-4 h-4" />
+                  <Unlock className="w-4 h-4" />
                 )}
               </Button>
               <Button
@@ -297,7 +325,10 @@ export function PropertiesPanel() {
           )}
 
           {selectedLayer?.type === "video" && (
-            <VideoProperties selectedObject={selectedObject as any} />
+            <VideoProperties
+              key={selectedLayer.id}
+              selectedObject={selectedObject as any}
+            />
           )}
 
           {(selectedLayer?.type === "sticker" ||

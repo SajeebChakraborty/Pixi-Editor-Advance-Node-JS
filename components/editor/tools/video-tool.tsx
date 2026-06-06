@@ -51,7 +51,7 @@ export function VideoTool() {
     setLibraryVideos(videos);
   };
 
-  const processFile = async (file: File) => {
+  const processVideoFile = async (file: File) => {
     const allowedMime = [
       "video/mp4",
       "video/webm",
@@ -95,13 +95,58 @@ export function VideoTool() {
     setLoading(false);
   };
 
-  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      await processFile(file);
-      // Reset input value so same file can be uploaded again
-      e.target.value = "";
+  const processFile = async (file: File) => {
+    const isImage =
+      file.type.startsWith("image/") ||
+      /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(file.name);
+
+    if (isImage) {
+      setLoading(true);
+      const toastId = toast.loading("Adding image overlay...");
+      const localUrl = URL.createObjectURL(file);
+      const objectId = await addMediaFromUrl(
+        localUrl,
+        useEditorStore.getState(),
+        "image",
+        false,
+        undefined,
+        file.name,
+      );
+      setLoading(false);
+
+      if (objectId) {
+        setLibraryVideos((previous) => [
+          {
+            id: `image_${Date.now()}`,
+            name: file.name,
+            url: localUrl,
+            type: "image",
+          },
+          ...previous,
+        ]);
+        useEditorStore.getState().addRecentAsset({
+          type: "image",
+          url: localUrl,
+          name: file.name,
+        });
+        toast.success("Image overlay added to video.", { id: toastId });
+      } else {
+        URL.revokeObjectURL(localUrl);
+        toast.error("Could not add image overlay.", { id: toastId });
+      }
+      return;
     }
+
+    await processVideoFile(file);
+  };
+
+  const handleFileUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files || []);
+    for (const file of files) {
+      await processFile(file);
+    }
+    // Reset input value so the same files can be uploaded again.
+    e.target.value = "";
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -118,8 +163,8 @@ export function VideoTool() {
     e.preventDefault();
     setIsDragging(false);
 
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
+    const files = Array.from(e.dataTransfer.files || []);
+    for (const file of files) {
       await processFile(file);
     }
   };
@@ -166,10 +211,18 @@ export function VideoTool() {
 
   const handleAddVideoToCanvas = async (url?: string) => {
     const targetUrl = url || selectedVideo;
-    if (!targetUrl) return;
+    if (!targetUrl) return false;
     const store = useEditorStore.getState();
-    await addMediaFromUrl(targetUrl, store, "video");
+    const objectId = await addMediaFromUrl(
+      targetUrl,
+      store,
+      "video",
+      false,
+      undefined,
+      libraryVideos.find((video) => video.url === targetUrl)?.name,
+    );
     if (!url) setSelectedVideo(null); // Only clear selection if added from editor, keep library open
+    return Boolean(objectId);
   };
 
   if (selectedVideo) {
@@ -203,12 +256,13 @@ export function VideoTool() {
 
         <div className="space-y-2">
           <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-1">
-            Upload Video
+            Upload Media
           </h3>
           <input
             ref={fileInputRef}
             type="file"
-            accept="video/*"
+            accept="video/*,image/*"
+            multiple
             onChange={handleFileUpload}
             className="hidden"
           />
@@ -232,8 +286,8 @@ export function VideoTool() {
               {loading
                 ? "Uploading..."
                 : isDragging
-                  ? "Drop Video Here"
-                  : "Click or Drag Video Here"}
+                  ? "Drop Video or Image Here"
+                  : "Click or Drag Video / Image Here"}
             </span>
           </Button>
         </div>
@@ -249,18 +303,39 @@ export function VideoTool() {
                 <div
                   key={video.id}
                   className="group relative aspect-video rounded-lg overflow-hidden bg-black/50 cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
-                  onClick={() => handleAddVideoToCanvas(video.url)}
+                  onClick={() => {
+                    if (video.type === "image") {
+                      void addMediaFromUrl(
+                        video.url,
+                        useEditorStore.getState(),
+                        "image",
+                        false,
+                        undefined,
+                        video.name,
+                      );
+                      return;
+                    }
+                    void handleAddVideoToCanvas(video.url);
+                  }}
                 >
-                  <video
-                    src={video.url}
-                    className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity"
-                    muted
-                    onMouseOver={(e) => e.currentTarget.play()}
-                    onMouseOut={(e) => {
-                      e.currentTarget.pause();
-                      e.currentTarget.currentTime = 0;
-                    }}
-                  />
+                  {video.type === "image" ? (
+                    <img
+                      src={video.url}
+                      alt={video.name}
+                      className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity"
+                    />
+                  ) : (
+                    <video
+                      src={video.url}
+                      className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity"
+                      muted
+                      onMouseOver={(e) => e.currentTarget.play()}
+                      onMouseOut={(e) => {
+                        e.currentTarget.pause();
+                        e.currentTarget.currentTime = 0;
+                      }}
+                    />
+                  )}
                   <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
                     <div className="w-8 h-8 rounded-full bg-black/50 backdrop-blur-sm flex items-center justify-center">
                       <Plus className="w-4 h-4 text-white" />

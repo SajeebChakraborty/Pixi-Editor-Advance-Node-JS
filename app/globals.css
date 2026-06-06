@@ -154,6 +154,8 @@
 /* Fabric.js Canvas Stability Fixes */
 .canvas-container {
   margin: 0 auto !important;
+  position: relative !important;
+  z-index: 1 !important;
   user-select: none !important;
   -webkit-user-select: none !important;
 }

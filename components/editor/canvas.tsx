@@ -6,8 +6,12 @@ import { useEditorStore, Layer, EditorPage } from "@/lib/store";
 import { Plus, Trash2, Minus, LayoutGrid } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { VideoPlayerCanvas } from "./video-player-canvas";
 import { ContextMenu } from "./context-menu";
+import {
+  attachVideoOverlay,
+  setVideoOverlayVisibility,
+  syncVideoOverlays,
+} from "@/lib/video-overlay";
 import {
   EDITOR_DRAG_MIME_TYPE,
   addEmojiToCanvas,
@@ -64,6 +68,21 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState("");
   const drawingRedoStackRef = useRef<fabric.FabricObject[]>([]);
+
+  const registerActiveCanvas = useCallback(
+    (canvas: fabric.Canvas) => {
+      const state = useEditorStore.getState();
+      if (
+        state.canvas.activePageId === pageId &&
+        !canvas.disposed &&
+        !canvas.destroyed &&
+        canvas.lowerCanvasEl?.isConnected
+      ) {
+        setFabricCanvas(canvas);
+      }
+    },
+    [pageId, setFabricCanvas],
+  );
 
   const handleToolDrop = (event: React.DragEvent<HTMLDivElement>) => {
     const payloadText = event.dataTransfer.getData(EDITOR_DRAG_MIME_TYPE);
@@ -251,7 +270,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       if (currentEditorState.canvas.activePageId !== pageId) {
         setActivePage(pageId);
       }
-      setFabricCanvas(canvas);
+      registerActiveCanvas(canvas);
     }
 
     // Sync layers FROM state TO new canvas (important for remounting)
@@ -288,7 +307,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     // CRITICAL: Ensure this page's canvas is the one in the store when active
     if (shouldRegisterCanvas && fabricCanvasRef.current) {
-        setFabricCanvas(fabricCanvasRef.current);
+      registerActiveCanvas(fabricCanvasRef.current);
     }
 
     // --- PREMIUM STYLE CONFIGURATION ---
@@ -396,6 +415,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     canvas.on("selection:created", (e) =>
       e.selected.forEach(applyPremiumStyle),
     );
+    const syncNativeVideoLayers = () => syncVideoOverlays(canvas);
+    canvas.on("after:render", syncNativeVideoLayers);
 
     fabricCanvasRef.current = canvas;
     canvas.setViewportTransform([
@@ -407,9 +428,11 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       pasteboardMargin * zoom,
     ]);
 
-    if (isActive) {
-      setFabricCanvas(canvas);
-    }
+    if (isActive) registerActiveCanvas(canvas);
+
+    const registrationFrame = requestAnimationFrame(() => {
+      registerActiveCanvas(canvas);
+    });
 
     // Context Menu Listener
     canvas.on("contextmenu", (opt) => {
@@ -820,9 +843,17 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     });
 
     return () => {
+      cancelAnimationFrame(registrationFrame);
       window.removeEventListener("editor:drawing-undo", handleDrawingUndo);
       window.removeEventListener("editor:drawing-redo", handleDrawingRedo);
+      canvas.off("after:render", syncNativeVideoLayers);
       clearSmartGuides();
+      if (useEditorStore.getState().canvas.fabricCanvas === canvas) {
+        setFabricCanvas(null);
+      }
+      canvas.getObjects().forEach((object: any) => {
+        object._disposeVideo?.();
+      });
       canvas.dispose();
       fabricCanvasRef.current = null;
     };
@@ -862,9 +893,9 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
   // Sync active canvas to store
   useEffect(() => {
     if (isActive && fabricCanvasRef.current) {
-      setFabricCanvas(fabricCanvasRef.current);
+      registerActiveCanvas(fabricCanvasRef.current);
     }
-  }, [isActive, setFabricCanvas]);
+  }, [isActive, registerActiveCanvas]);
 
   // Sync store selection -> canvas (Two-way tracking)
   useEffect(() => {
@@ -894,6 +925,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     const obj = canvas.getObjects().find((o: any) => o.name === layer.objectId);
     if (obj) {
+      if (layer.visible === false) {
+        return;
+      }
+
       const activeObj = canvas.getActiveObject();
       if (activeObj !== obj) {
         canvas.setActiveObject(obj);
@@ -929,6 +964,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         width: pageWidth * zoom,
         height: pageHeight * zoom,
       };
+      syncVideoOverlays(canvas);
 
       // Update interactive properties based on tool
       canvas.selection = !isHandTool;
@@ -971,33 +1007,50 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
   const playbackTimeRef = useRef(currentTime ?? 0);
   const lastCommittedPlaybackTimeRef = useRef(currentTime ?? 0);
+  const wasPlayingRef = useRef(false);
+  const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
 
-  const drawVideoFrame = useCallback((obj: any, videoEl: HTMLVideoElement) => {
-    const videoFrameCanvas = obj._videoFrameCanvas as HTMLCanvasElement | undefined;
-    const videoFrameCtx = obj._videoFrameCtx as CanvasRenderingContext2D | null | undefined;
-    if (!videoFrameCanvas || !videoFrameCtx || videoEl.readyState < 2) return false;
+  useEffect(() => {
+    const audioLayers =
+      pages
+        .find((page: EditorPage) => page.id === pageId)
+        ?.layers.filter((layer: Layer) => layer.type === "audio") || [];
+    const activeIds = new Set(audioLayers.map((layer) => layer.id));
 
-    try {
-      videoFrameCtx.clearRect(0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-      videoFrameCtx.drawImage(videoEl, 0, 0, videoFrameCanvas.width, videoFrameCanvas.height);
-      obj.dirty = true;
-      return true;
-    } catch {
-      return false;
-    }
+    audioLayers.forEach((layer) => {
+      const url = layer.data?.url;
+      if (!url || audioElementsRef.current.has(layer.id)) return;
+
+      const audio = new Audio(url);
+      audio.preload = "auto";
+      audioElementsRef.current.set(layer.id, audio);
+    });
+
+    audioElementsRef.current.forEach((audio, layerId) => {
+      if (activeIds.has(layerId)) return;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      audioElementsRef.current.delete(layerId);
+    });
+
+    return () => {
+      audioElementsRef.current.forEach((audio) => {
+        audio.pause();
+      });
+    };
+  }, [pages, pageId]);
+
+  useEffect(() => {
+    return () => {
+      audioElementsRef.current.forEach((audio) => {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      });
+      audioElementsRef.current.clear();
+    };
   }, []);
-
-  const drawVideoFrameForPlayback = useCallback(
-    (obj: any, videoEl: HTMLVideoElement) => {
-      const now = performance.now();
-      const lastDrawAt = Number(obj._lastVideoPreviewDrawAt || 0);
-      if (now - lastDrawAt < 33) return false;
-      if (!drawVideoFrame(obj, videoEl)) return false;
-      obj._lastVideoPreviewDrawAt = now;
-      return true;
-    },
-    [drawVideoFrame],
-  );
 
   const syncTimedObjects = useCallback(
     (
@@ -1008,13 +1061,70 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       if (!canvas) return false;
 
       const layers = pages.find((p: EditorPage) => p.id === pageId)?.layers || [];
-      const hasVideoLayer = layers.some((layer: Layer) => layer.type === "video");
-      if (!hasVideoLayer) return false;
-
       const currTime = Number.isFinite(timelineTime) ? timelineTime : 0;
       let needsRender = false;
+      const processedVideoObjects = new Set<string>();
 
       layers.forEach((layer: Layer) => {
+        if (layer.type === "audio") {
+          const audio = audioElementsRef.current.get(layer.id);
+          if (!audio) return;
+
+          const layerStart = Number(layer.startTime || 0);
+          const layerDuration = Number(layer.duration || 0);
+          const mediaStart = Number(layer.mediaStart || 0);
+          const sourceDuration = Number(layer.data?.sourceDuration || 0);
+          const shouldLoop = Boolean(layer.data?.loop && sourceDuration > 0);
+          const shouldPlay =
+            currTime >= layerStart && currTime < layerStart + layerDuration;
+          const rawTargetTime = Math.max(
+            0,
+            mediaStart + currTime - layerStart,
+          );
+          const targetTime = shouldLoop
+            ? rawTargetTime % sourceDuration
+            : rawTargetTime;
+          const layerVolume = Math.min(
+            1,
+            Math.max(0, Number(layer.data?.volume ?? 1)),
+          );
+
+          audio.volume = layerVolume;
+          audio.playbackRate = playbackRate || 1;
+          audio.loop = shouldLoop;
+
+          if (shouldPlay) {
+            const shouldSeek =
+              options.forceSeek ||
+              !isPlaying ||
+              audio.ended ||
+              Math.abs(audio.currentTime - targetTime) > 0.2;
+            if (shouldSeek && Number.isFinite(targetTime)) {
+              try {
+                audio.currentTime = targetTime;
+              } catch {
+                // Metadata may still be loading; the next sync will retry.
+              }
+            }
+            if (
+              isActive &&
+              options.allowPlayback !== false &&
+              isPlaying &&
+              audio.paused
+            ) {
+              audio.play().catch(() => {});
+            } else if (
+              (!isActive || !isPlaying || options.allowPlayback === false) &&
+              !audio.paused
+            ) {
+              audio.pause();
+            }
+          } else if (!audio.paused) {
+            audio.pause();
+          }
+          return;
+        }
+
         const obj = canvas
           .getObjects()
           .find((o: any) => o.name === layer.objectId) as any;
@@ -1025,9 +1135,25 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
           layer.type === "video" &&
           (obj.getElement || (obj as any)._videoEl)
         ) {
-          const layerStart = layer.startTime ?? 0;
-          const layerDuration = layer.duration ?? 300;
-          const mediaStart = layer.mediaStart ?? 0;
+          const objectId = layer.objectId || layer.id;
+          if (processedVideoObjects.has(objectId)) return;
+          processedVideoObjects.add(objectId);
+
+          const sourceSegments = layers.filter(
+            (candidate: Layer) =>
+              candidate.type === "video" &&
+              candidate.objectId === layer.objectId,
+          );
+          const activeSegment = sourceSegments.find((candidate: Layer) => {
+            const candidateStart = Number(candidate.startTime || 0);
+            const candidateEnd =
+              candidateStart + Number(candidate.duration || 0);
+            return currTime >= candidateStart && currTime < candidateEnd;
+          });
+          const playbackSegment = activeSegment || layer;
+          const layerStart = playbackSegment.startTime ?? 0;
+          const layerDuration = playbackSegment.duration ?? 300;
+          const mediaStart = playbackSegment.mediaStart ?? 0;
           const safeStart = isNaN(layerStart) ? 0 : layerStart;
           const element = obj.getElement ? obj.getElement() : null;
           const videoEl = ((obj as any)._videoEl ||
@@ -1041,9 +1167,11 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
                 : 300
               : layerDuration;
           const layerEnd = safeStart + safeDuration;
-          const shouldShow = currTime >= safeStart - 0.5 && currTime < layerEnd;
+          const shouldShow =
+            Boolean(activeSegment) && playbackSegment.visible !== false;
 
           if (!videoEl) return;
+          attachVideoOverlay(canvas, obj, videoEl);
 
           videoEl.muted = isMuted;
           videoEl.volume = isMuted ? 0 : Math.min(1, Math.max(0, volume ?? 1));
@@ -1056,25 +1184,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
               (!isPlaying &&
                 (!Number.isFinite(videoEl.currentTime) ||
                   Math.abs(videoEl.currentTime - targetTime) > 0.04));
-
-            if (shouldSeek) {
-              try {
-                videoEl.currentTime = Math.max(0, targetTime);
-                needsRender = true;
-              } catch {
-                // Some codecs reject early seeks until more data is decoded.
-              }
-            }
-
-            if (options.allowPlayback !== false && isPlaying) {
-              if (videoEl.paused) videoEl.play().catch(() => {});
-            } else if (!videoEl.paused) {
-              videoEl.pause();
-            }
-
-            if (options.drawFrame !== false && drawVideoFrame(obj, videoEl)) {
-              needsRender = true;
-            }
+            const canPlayback =
+              isActive && options.allowPlayback !== false && isPlaying;
 
             if (!obj.visible) {
               obj.visible = true;
@@ -1082,11 +1193,44 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
               obj.dirty = true;
               needsRender = true;
             }
+            setVideoOverlayVisibility(obj, true);
+
+            if (shouldSeek || videoEl.ended) {
+              const durationLimit = Number.isFinite(videoEl.duration)
+                ? Math.max(0, videoEl.duration - 0.001)
+                : Number.POSITIVE_INFINITY;
+              const seekTarget = Math.min(
+                Math.max(0, targetTime),
+                durationLimit,
+              );
+              if (
+                !Number.isFinite(videoEl.currentTime) ||
+                Math.abs(videoEl.currentTime - seekTarget) > 0.01 ||
+                videoEl.ended
+              ) {
+                try {
+                  videoEl.currentTime = seekTarget;
+                } catch {
+                  // Metadata can briefly be unavailable during a remount.
+                }
+              }
+            }
+
+            if (canPlayback) {
+              if (videoEl.paused) {
+                void videoEl.play().catch(() => {
+                  // A later user-initiated playback pass retries automatically.
+                });
+              }
+            } else if (!videoEl.paused) {
+              videoEl.pause();
+            }
           } else {
             if (!videoEl.paused) videoEl.pause();
+            setVideoOverlayVisibility(obj, false);
             if (obj.visible) {
               obj.visible = false;
-              obj.opacity = 0;
+              obj.opacity = 1;
               obj.dirty = true;
               needsRender = true;
             }
@@ -1104,7 +1248,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
           return;
 
         const layerEnd = layerStart + layerDuration;
-        const shouldShow = currTime >= layerStart - 0.5 && currTime < layerEnd;
+        const shouldShow =
+          layer.visible !== false &&
+          currTime >= layerStart - 0.5 &&
+          currTime < layerEnd;
 
         if (obj.visible !== shouldShow) {
           obj.visible = shouldShow;
@@ -1120,92 +1267,23 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
       return needsRender;
     },
-    [pages, pageId, isPlaying, isMuted, volume, playbackRate, drawVideoFrame],
+    [
+      pages,
+      pageId,
+      isPlaying,
+      isMuted,
+      volume,
+      playbackRate,
+      isActive,
+    ],
   );
 
   useEffect(() => {
-    if (!isActive || !isPlaying) return;
-
-    const canvas = fabricCanvasRef.current;
-    if (!canvas) return;
-
-    let cancelled = false;
-    let rafId: number | null = null;
-    const callbackIds = new Map<HTMLVideoElement, number>();
-
-    const getActiveVideoObjects = () => {
-      const layers = pages.find((p: EditorPage) => p.id === pageId)?.layers || [];
-      return layers
-        .filter((layer: Layer) => layer.type === "video")
-        .map((layer: Layer) => {
-          const obj = canvas.getObjects().find((o: any) => o.name === layer.objectId) as any;
-          const element = obj?.getElement ? obj.getElement() : null;
-          const videoEl = (obj?._videoEl ||
-            (element?.tagName === "VIDEO" ? element : null)) as HTMLVideoElement | null;
-          return { obj, videoEl };
-        })
-        .filter(
-          (item): item is { obj: any; videoEl: HTMLVideoElement } =>
-            Boolean(item.obj && item.videoEl),
-        );
-    };
-
-    const scheduleVideoFrame = (obj: any, videoEl: HTMLVideoElement) => {
-      const requestFrame = (videoEl as any).requestVideoFrameCallback as
-        | ((callback: () => void) => number)
-        | undefined;
-      if (!requestFrame) return false;
-
-      const onFrame = () => {
-        if (cancelled) return;
-        if (obj.visible && drawVideoFrameForPlayback(obj, videoEl)) {
-          canvas.requestRenderAll();
-        }
-        const id = requestFrame.call(videoEl, onFrame);
-        callbackIds.set(videoEl, id);
-      };
-
-      const id = requestFrame.call(videoEl, onFrame);
-      callbackIds.set(videoEl, id);
-      return true;
-    };
-
-    const videoObjects = getActiveVideoObjects();
-    const usingVideoFrameCallbacks = videoObjects.some(({ obj, videoEl }) =>
-      scheduleVideoFrame(obj, videoEl),
-    );
-
-    if (!usingVideoFrameCallbacks) {
-      const renderLoop = () => {
-        if (cancelled) return;
-        let needsRender = false;
-        getActiveVideoObjects().forEach(({ obj, videoEl }) => {
-          if (obj.visible && drawVideoFrameForPlayback(obj, videoEl)) {
-            needsRender = true;
-          }
-        });
-        if (needsRender) canvas.requestRenderAll();
-        rafId = requestAnimationFrame(renderLoop);
-      };
-      rafId = requestAnimationFrame(renderLoop);
-    }
-
-    return () => {
-      cancelled = true;
-      if (rafId != null) cancelAnimationFrame(rafId);
-      callbackIds.forEach((id, videoEl) => {
-        const cancelFrame = (videoEl as any).cancelVideoFrameCallback as
-          | ((callbackId: number) => void)
-          | undefined;
-        if (cancelFrame) cancelFrame.call(videoEl, id);
-      });
-    };
-  }, [isActive, isPlaying, pages, pageId, drawVideoFrameForPlayback]);
-
-  useEffect(() => {
     const incomingTime = currentTime ?? 0;
+    const playbackJustStarted = isPlaying && !wasPlayingRef.current;
     const isPlaybackCommit =
       isPlaying &&
+      !playbackJustStarted &&
       Math.abs(incomingTime - lastCommittedPlaybackTimeRef.current) < 0.02;
 
     if (!isPlaybackCommit) {
@@ -1213,9 +1291,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     }
 
     syncTimedObjects(incomingTime, {
-      forceSeek: !isPlaybackCommit,
+      forceSeek: playbackJustStarted || !isPlaybackCommit,
       drawFrame: !isPlaybackCommit || !isPlaying,
     });
+    wasPlayingRef.current = isPlaying;
   }, [currentTime, isPlaying, syncTimedObjects]);
 
   // 1. Playback Loop (Master Clock)
@@ -1228,22 +1307,76 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     playbackTimeRef.current =
       useEditorStore.getState().videoState.currentTime ?? playbackTimeRef.current;
 
+    const getMediaClockTime = (timelineTime: number) => {
+      const canvas = fabricCanvasRef.current;
+      const layers =
+        pages.find((page: EditorPage) => page.id === pageId)?.layers || [];
+      const activeVideoLayer = layers.find((layer: Layer) => {
+        if (layer.type !== "video") return false;
+        const layerStart = Number(layer.startTime || 0);
+        const layerEnd = layerStart + Number(layer.duration || 0);
+        return timelineTime >= layerStart && timelineTime < layerEnd;
+      });
+      if (!canvas || !activeVideoLayer) return null;
+
+      const object = canvas
+        .getObjects()
+        .find((candidate: any) => candidate.name === activeVideoLayer.objectId) as any;
+      const videoEl = object?._videoEl as HTMLVideoElement | undefined;
+      if (
+        !videoEl ||
+        videoEl.seeking ||
+        !Number.isFinite(videoEl.currentTime)
+      ) {
+        return videoEl ? timelineTime : null;
+      }
+
+      return (
+        Number(activeVideoLayer.startTime || 0) +
+        Math.max(
+          0,
+          videoEl.currentTime - Number(activeVideoLayer.mediaStart || 0),
+        )
+      );
+    };
+
     const loop = () => {
       const now = performance.now();
       const dt = (now - lastTime) / 1000;
       lastTime = now;
 
-      const nextTime = playbackTimeRef.current + dt * playbackRate;
+      const mediaClockTime = getMediaClockTime(playbackTimeRef.current);
+      const nextTime =
+        mediaClockTime ?? playbackTimeRef.current + dt * playbackRate;
+      const playbackEnd = Math.min(
+        Number.isFinite(endTime) && endTime > 0 ? endTime : duration,
+        duration,
+      );
 
-      if (nextTime >= endTime) {
-        playbackTimeRef.current = startTime;
-        lastCommittedPlaybackTimeRef.current = startTime;
-        setVideoState({ currentTime: startTime });
-        syncTimedObjects(startTime, { forceSeek: true, drawFrame: true });
-      } else if (nextTime >= duration) {
-        playbackTimeRef.current = duration;
-        lastCommittedPlaybackTimeRef.current = duration;
-        setVideoState({ isPlaying: false, currentTime: duration });
+      if (nextTime >= playbackEnd) {
+        const firstVideoStart =
+          pages
+            .find((page: EditorPage) => page.id === pageId)
+            ?.layers.filter((layer: Layer) => layer.type === "video")
+            .reduce(
+              (earliest: number, layer: Layer) =>
+                Math.min(earliest, Number(layer.startTime || 0)),
+              Number.POSITIVE_INFINITY,
+            ) ?? Number.POSITIVE_INFINITY;
+        const previewTime = Number.isFinite(firstVideoStart)
+          ? firstVideoStart
+          : startTime;
+
+        playbackTimeRef.current = previewTime;
+        lastCommittedPlaybackTimeRef.current = previewTime;
+        wasPlayingRef.current = false;
+        setVideoState({ isPlaying: false, currentTime: previewTime });
+        syncTimedObjects(previewTime, {
+          forceSeek: true,
+          allowPlayback: false,
+          drawFrame: true,
+        });
+        return;
       } else {
         playbackTimeRef.current = nextTime;
 
@@ -1269,6 +1402,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     playbackRate,
     setVideoState,
     syncTimedObjects,
+    pages,
+    pageId,
   ]);
 
   return (
@@ -1277,7 +1412,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       <div
         ref={containerRef}
         className={cn(
-          "relative transition-all duration-300 group",
+          "relative group",
           isActive
             ? "border-[#8b5cf6]/30"
             : "hover:shadow-2xl border-transparent",
@@ -1308,8 +1443,9 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         }}
       >
         <div
+          data-artboard-for={pageId}
           className={cn(
-            "absolute bg-white shadow-[0_20px_50px_rgba(0,0,0,0.1)] transition-all duration-300",
+            "absolute z-0 bg-white shadow-[0_20px_50px_rgba(0,0,0,0.1)] transition-shadow duration-300",
             isActive
               ? "ring-[6px] ring-[#8b5cf6]/10"
               : "group-hover:shadow-2xl",
@@ -1477,9 +1613,45 @@ export function Canvas() {
   const activePageWidth = activePage?.width ?? width;
   const activePageHeight = activePage?.height ?? height;
 
+  const focusActiveArtboard = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const artboard = container.querySelector<HTMLElement>(
+      `[data-artboard-for="${activePageId}"]`,
+    );
+    if (!artboard) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const artboardRect = artboard.getBoundingClientRect();
+    const centeredLeft = Math.max(
+      32,
+      (container.clientWidth - artboardRect.width) / 2,
+    );
+    const centeredTop = Math.max(
+      32,
+      (container.clientHeight - artboardRect.height) / 2,
+    );
+
+    container.scrollTo({
+      left:
+        container.scrollLeft +
+        artboardRect.left -
+        containerRect.left -
+        centeredLeft,
+      top:
+        container.scrollTop +
+        artboardRect.top -
+        containerRect.top -
+        centeredTop,
+      behavior: "auto",
+    });
+  }, [activePageId]);
+
   // Auto-zoom to fit container using ResizeObserver
   useEffect(() => {
     if (!containerRef.current) return;
+    let focusFrame = 0;
 
     const updateZoom = (entries: ResizeObserverEntry[]) => {
       for (const entry of entries) {
@@ -1499,7 +1671,15 @@ export function Canvas() {
 
           // Fit to screen, but don't explode it too much on ultra-wide screens
           const scale = Math.min(scaleX, scaleY, 1.1);
-          setZoom(Number(scale.toFixed(2)));
+          const nextZoom = Number(scale.toFixed(2));
+          if (useEditorStore.getState().canvas.zoom !== nextZoom) {
+            setZoom(nextZoom);
+          }
+
+          cancelAnimationFrame(focusFrame);
+          focusFrame = requestAnimationFrame(() => {
+            focusFrame = requestAnimationFrame(focusActiveArtboard);
+          });
         }
       }
     };
@@ -1507,8 +1687,16 @@ export function Canvas() {
     const observer = new ResizeObserver(updateZoom);
     observer.observe(containerRef.current);
 
-    return () => observer.disconnect();
-  }, [activePageWidth, activePageHeight, setZoom]);
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(focusFrame);
+    };
+  }, [
+    activePageWidth,
+    activePageHeight,
+    focusActiveArtboard,
+    setZoom,
+  ]);
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();

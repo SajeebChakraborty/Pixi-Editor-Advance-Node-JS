@@ -54,24 +54,40 @@ export function ImageTool() {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
       const fabricCanvas = useEditorStore.getState().canvas.fabricCanvas;
-      if (fabricCanvas) return true;
+      if (
+        fabricCanvas &&
+        !fabricCanvas.disposed &&
+        !fabricCanvas.destroyed &&
+        fabricCanvas.lowerCanvasEl?.isConnected
+      ) {
+        return true;
+      }
       await new Promise((resolve) => setTimeout(resolve, 120));
     }
     return false;
   };
 
-  const getImageDimensions = (src: string): Promise<{ width: number; height: number }> =>
-    new Promise((resolve, reject) => {
-      const img = new window.Image();
-      img.onload = () => {
-        const width = Number(img.naturalWidth || 0);
-        const height = Number(img.naturalHeight || 0);
-        if (width > 0 && height > 0) resolve({ width, height });
-        else reject(new Error("Invalid image dimensions"));
-      };
-      img.onerror = () => reject(new Error("Failed to load image dimensions"));
-      img.src = src;
+  const getRenderedImageLayers = () => {
+    const state = useEditorStore.getState();
+    const fabricCanvas = state.canvas.fabricCanvas;
+    if (!fabricCanvas) return [];
+
+    return state.getLayers().filter((layer) => {
+      if (layer.type !== "image" || !layer.objectId) return false;
+      const object = fabricCanvas
+        .getObjects()
+        .find((candidate: any) => candidate.name === layer.objectId);
+
+      return Boolean(
+        object &&
+          object.canvas === fabricCanvas &&
+          object.visible !== false &&
+          Number(object.opacity ?? 1) > 0 &&
+          object.getScaledWidth() > 0 &&
+          object.getScaledHeight() > 0,
+      );
     });
+  };
 
   const processFiles = async (files: File[]) => {
     if (files.length === 0) return;
@@ -98,21 +114,19 @@ export function ImageTool() {
 
     try {
       const urls = await Promise.all(validFiles.map((file) => readFileAsDataUrl(file)));
-      const store = useEditorStore.getState();
-      const layers = store.getLayers();
-      const imageLayers = layers.filter((layer) => layer.type === "image");
-      const fabricCanvas = store.canvas.fabricCanvas;
-      const hasRenderedImageOnCanvas = imageLayers.some((layer) =>
-        Boolean(
-          fabricCanvas
-            ?.getObjects()
-            .some((obj: any) => obj?.name && obj.name === layer.objectId),
-        ),
-      );
-      const shouldAutoAddToCanvas = !hasRenderedImageOnCanvas;
+      const hasVideoLayer = useEditorStore
+        .getState()
+        .getLayers()
+        .some((layer) => layer.type === "video");
+      const hasRenderedImageOnCanvas = getRenderedImageLayers().length > 0;
+      const shouldAutoAddToCanvas =
+        hasVideoLayer || !hasRenderedImageOnCanvas;
 
       if (shouldAutoAddToCanvas) {
-        await addImage(urls[0], validFiles[0].name);
+        const addedToCanvas = await addImage(urls[0], validFiles[0].name);
+        if (!addedToCanvas) {
+          throw new Error("The first uploaded image was not rendered.");
+        }
       }
 
       for (let i = shouldAutoAddToCanvas ? 1 : 0; i < validFiles.length; i += 1) {
@@ -233,19 +247,18 @@ export function ImageTool() {
   const hasSearchResults =
     recentImages.length > 0 || filteredCategories.length > 0;
 
-  const addImage = async (url: string, name: string = "Image") => {
+  const addImage = async (
+    url: string,
+    name: string = "Image",
+  ): Promise<boolean> => {
     try {
-      const store = useEditorStore.getState();
-      try {
-        const { width, height } = await getImageDimensions(url);
-        store.setCanvas({ width, height });
-      } catch (dimensionError) {
-        console.warn("Could not infer image dimensions for canvas resize:", dimensionError);
-      }
-
       // First-time upload can race with initial canvas registration.
       // Wait for a live fabric canvas and retry a few times before giving up.
-      await waitForFabricCanvas();
+      const canvasReady = await waitForFabricCanvas();
+      if (!canvasReady) {
+        throw new Error("Canvas did not become ready.");
+      }
+
       const imageCountBefore = useEditorStore
         .getState()
         .getLayers()
@@ -253,7 +266,7 @@ export function ImageTool() {
 
       let added = false;
       for (let attempt = 0; attempt < 4; attempt += 1) {
-        await addMediaFromUrl(
+        const objectId = await addMediaFromUrl(
           url,
           useEditorStore.getState(),
           "image",
@@ -261,11 +274,25 @@ export function ImageTool() {
           undefined,
           name,
         );
-        const imageCountAfter = useEditorStore
-          .getState()
+        const currentState = useEditorStore.getState();
+        const renderedObject = objectId
+          ? currentState.canvas.fabricCanvas
+              ?.getObjects()
+              .find((object: any) => object.name === objectId)
+          : null;
+        const imageCountAfter = currentState
           .getLayers()
           .filter((layer) => layer.type === "image").length;
-        if (imageCountAfter > imageCountBefore) {
+
+        if (
+          imageCountAfter > imageCountBefore &&
+          renderedObject &&
+          renderedObject.canvas === currentState.canvas.fabricCanvas
+        ) {
+          renderedObject.set({ visible: true, opacity: 1 });
+          renderedObject.setCoords();
+          currentState.canvas.fabricCanvas?.setActiveObject(renderedObject);
+          currentState.canvas.fabricCanvas?.requestRenderAll();
           added = true;
           break;
         }
@@ -275,9 +302,11 @@ export function ImageTool() {
       if (!added) {
         throw new Error("Image could not be attached to canvas.");
       }
+      return true;
     } catch (err) {
       console.error("Error adding image:", err);
       toast.error("Failed to add image.");
+      return false;
     }
   };
 

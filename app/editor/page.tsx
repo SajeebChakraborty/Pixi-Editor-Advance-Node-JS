@@ -270,7 +270,7 @@ function EditorContent() {
     // { id: "templates", icon: LayoutGrid, label: "Templates", type: "tab" },
     { id: "video", icon: Video, label: "Video", type: "tab" },
     { id: "photos", icon: ImageIcon, label: "Photos", type: "tab" },
-    // { id: "audio", icon: Music, label: "Audio", type: "tab" },
+    { id: "audio", icon: Music, label: "Audio", type: "tab" },
     // { id: "upload", icon: Upload, label: "Upload", type: "tab" },
     { id: "objects", icon: Shapes, label: "Objects", type: "tab" },
   ];

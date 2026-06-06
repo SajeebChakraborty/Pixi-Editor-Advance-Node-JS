@@ -19,6 +19,127 @@ import {
 import { useRef, useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
+import {
+  resolveVideoPlaybackUrl,
+  videoNeedsCrossOrigin,
+} from "@/lib/video-playback-url";
+
+const videoFrameCache = new Map<string, Promise<string[]>>();
+
+function captureVideoFrames(url: string) {
+  const cached = videoFrameCache.get(url);
+  if (cached) return cached;
+
+  const capturePromise = new Promise<string[]>((resolve) => {
+    const video = document.createElement("video");
+    const resolvedUrl = resolveVideoPlaybackUrl(url);
+    if (videoNeedsCrossOrigin(resolvedUrl)) {
+      video.crossOrigin = "anonymous";
+    }
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+
+    const cleanup = () => {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
+
+    video.onerror = () => {
+      cleanup();
+      resolve([]);
+    };
+    video.onloadedmetadata = async () => {
+      const sourceDuration = Number.isFinite(video.duration)
+        ? video.duration
+        : 0;
+      const sampleCount = 6;
+      const nextFrames: string[] = [];
+      const canvas = document.createElement("canvas");
+      canvas.width = 160;
+      canvas.height = 90;
+      const context = canvas.getContext("2d");
+      if (!context || sourceDuration <= 0) {
+        cleanup();
+        resolve([]);
+        return;
+      }
+
+      for (let index = 0; index < sampleCount; index += 1) {
+        const sampleTime =
+          Math.max(0, sourceDuration - 0.05) *
+          (index / (sampleCount - 1));
+
+        await new Promise<void>((finishSeek) => {
+          if (Math.abs(video.currentTime - sampleTime) < 0.01) {
+            finishSeek();
+            return;
+          }
+          let timeoutId = 0;
+          const finish = () => {
+            window.clearTimeout(timeoutId);
+            video.removeEventListener("seeked", finish);
+            finishSeek();
+          };
+          timeoutId = window.setTimeout(finish, 1200);
+          video.addEventListener("seeked", finish, { once: true });
+          video.currentTime = sampleTime;
+        });
+
+        try {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          nextFrames.push(canvas.toDataURL("image/jpeg", 0.6));
+        } catch {
+          break;
+        }
+      }
+
+      cleanup();
+      resolve(nextFrames);
+    };
+    video.src = resolvedUrl;
+    video.load();
+  });
+
+  videoFrameCache.set(url, capturePromise);
+  return capturePromise;
+}
+
+function VideoFrameStrip({ url }: { url?: string }) {
+  const [frames, setFrames] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!url) {
+      setFrames([]);
+      return;
+    }
+
+    let cancelled = false;
+    void captureVideoFrames(url).then((nextFrames) => {
+      if (!cancelled) setFrames(nextFrames);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (frames.length === 0) return null;
+
+  return (
+    <div className="absolute inset-0 flex overflow-hidden opacity-55 pointer-events-none">
+      {frames.map((frame, index) => (
+        <img
+          key={`${frame.slice(-16)}-${index}`}
+          src={frame}
+          alt=""
+          className="h-full min-w-0 flex-1 object-cover"
+        />
+      ))}
+    </div>
+  );
+}
 
 export function Timeline() {
   const {
@@ -49,6 +170,7 @@ export function Timeline() {
     originalStart: number;
     originalDuration: number;
     originalTrack: number;
+    originalMediaStart: number;
   } | null>(null);
 
   const duration = videoState.duration || 30; // Default to 30s if no video
@@ -79,6 +201,20 @@ export function Timeline() {
   };
 
   const togglePlay = () => {
+    if (!isPlaying && currentTime >= duration - 0.01) {
+      const firstVideoStart = layers
+        .filter((layer) => layer.type === "video")
+        .reduce(
+          (earliest, layer) =>
+            Math.min(earliest, Number(layer.startTime || 0)),
+          Number.POSITIVE_INFINITY,
+        );
+      setVideoState({
+        currentTime: Number.isFinite(firstVideoStart) ? firstVideoStart : 0,
+        isPlaying: true,
+      });
+      return;
+    }
     setVideoState({ isPlaying: !isPlaying });
   };
 
@@ -106,6 +242,7 @@ export function Timeline() {
       originalStart: layer.startTime || 0,
       originalDuration: layer.duration || duration,
       originalTrack: layer.track ?? 0,
+      originalMediaStart: layer.mediaStart || 0,
     });
     selectLayer(layerId);
   };
@@ -128,6 +265,7 @@ export function Timeline() {
       originalStart: layer.startTime || 0,
       originalDuration: layer.duration || duration,
       originalTrack: layer.track ?? 0,
+      originalMediaStart: layer.mediaStart || 0,
     });
   };
 
@@ -157,30 +295,40 @@ export function Timeline() {
           track: newTrack,
         });
       } else if (dragState.type === "resize-start") {
-        let newStart = dragState.originalStart + deltaTime;
-        let newDuration = dragState.originalDuration - deltaTime;
-
-        if (newStart < 0) {
-          newDuration += newStart;
-          newStart = 0;
-        }
-        if (newDuration < 0.1) {
-          // Prevent collapsing
-          newStart = dragState.originalStart + dragState.originalDuration - 0.1;
-          newDuration = 0.1;
-        }
-
-        // Also update mediaStart for video clips to keep sync
         const layer = layers.find((l) => l.id === dragState.layerId);
-        if (layer && layer.type === "video") {
+        if (layer && (layer.type === "video" || layer.type === "audio")) {
+          const fixedEnd =
+            dragState.originalStart + dragState.originalDuration;
+          const earliestTimelineStart = Math.max(
+            0,
+            dragState.originalStart - dragState.originalMediaStart,
+          );
+          const newStart = Math.min(
+            fixedEnd - 0.1,
+            Math.max(
+              earliestTimelineStart,
+              dragState.originalStart + deltaTime,
+            ),
+          );
           const shift = newStart - dragState.originalStart;
-          const oldMediaStart = layer.mediaStart || 0;
           updateLayer(dragState.layerId, {
             startTime: newStart,
-            duration: newDuration,
-            mediaStart: oldMediaStart + shift,
+            duration: fixedEnd - newStart,
+            mediaStart: Math.max(0, dragState.originalMediaStart + shift),
           });
         } else {
+          let newStart = dragState.originalStart + deltaTime;
+          let newDuration = dragState.originalDuration - deltaTime;
+
+          if (newStart < 0) {
+            newDuration += newStart;
+            newStart = 0;
+          }
+          if (newDuration < 0.1) {
+            newStart =
+              dragState.originalStart + dragState.originalDuration - 0.1;
+            newDuration = 0.1;
+          }
           updateLayer(dragState.layerId, {
             startTime: newStart,
             duration: newDuration,
@@ -189,6 +337,18 @@ export function Timeline() {
       } else if (dragState.type === "resize-end") {
         let newDuration = dragState.originalDuration + deltaTime;
         if (newDuration < 0.1) newDuration = 0.1;
+
+        const layer = layers.find((item) => item.id === dragState.layerId);
+        const sourceDuration = Number(layer?.data?.sourceDuration || 0);
+        if (
+          (layer?.type === "video" || layer?.type === "audio") &&
+          sourceDuration > 0
+        ) {
+          newDuration = Math.min(
+            newDuration,
+            Math.max(0.1, sourceDuration - dragState.originalMediaStart),
+          );
+        }
 
         updateLayer(dragState.layerId, { duration: newDuration });
       }
@@ -411,6 +571,12 @@ export function Timeline() {
                         }}
                         onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
                       >
+                        {layer.type === "video" && (
+                          <VideoFrameStrip
+                            url={layer.data?.url}
+                          />
+                        )}
+
                         {/* Trim Handles (Start) */}
                         <div
                           className={cn(
