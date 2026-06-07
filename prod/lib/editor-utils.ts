@@ -10,7 +10,7 @@ export const addMediaFromUrl = async (
   silent = false,
   forceObjectId?: string
 ) => {
-  const { canvas, addLayer, setVideoState, addRecentAsset, videoState } = store;
+  const { canvas, addLayer, setVideoState, addRecentAsset, videoState, setCanvas } = store;
   const { width: baseWidth, height: baseHeight } = canvas || { width: 1280, height: 720 };
 
   const getLiveFabricCanvas = () =>
@@ -196,6 +196,14 @@ export const addMediaFromUrl = async (
     const objectId = forceObjectId || `vid_${Date.now()}`;
     const vWidth = videoEl.videoWidth || 1280;
     const vHeight = videoEl.videoHeight || 720;
+    if (!silent) {
+      const currentStore = useEditorStore.getState();
+      currentStore
+        .getLayers()
+        .filter((layer: any) => layer.type === "video")
+        .forEach((layer: any) => currentStore.deleteLayer(layer.id));
+      setCanvas?.({ width: vWidth, height: vHeight });
+    }
     const previewScale = Math.min(
       1,
       (baseWidth * 0.8) / vWidth,
@@ -219,12 +227,12 @@ export const addMediaFromUrl = async (
     const scale = Math.min((baseWidth * 0.8) / frameWidth, (baseHeight * 0.8) / frameHeight) || 1;
 
     const fabricVideo = new fabric.FabricImage(frameCanvas, { 
-      left: (baseWidth - frameWidth * scale) / 2,
-      top: (baseHeight - frameHeight * scale) / 2,
+      left: silent ? (baseWidth - frameWidth * scale) / 2 : 0,
+      top: silent ? (baseHeight - frameHeight * scale) / 2 : 0,
       width: frameWidth,
       height: frameHeight,
-      scaleX: scale, 
-      scaleY: scale,
+      scaleX: silent ? scale : vWidth / frameWidth,
+      scaleY: silent ? scale : vHeight / frameHeight,
       name: objectId,
       objectCaching: false, // CRITICAL: Force every frame refresh
       visible: true,
@@ -233,10 +241,12 @@ export const addMediaFromUrl = async (
     (fabricVideo as any)._videoEl = videoEl;
     (fabricVideo as any)._videoFrameCanvas = frameCanvas;
     (fabricVideo as any)._videoFrameCtx = frameCtx;
+    (fabricVideo as any)._disposeVideo = () => {
+      videoEl.pause();
+      videoEl.removeAttribute("src");
+      videoEl.load();
+    };
 
-    if (!silent) {
-      fabricCanvas.clear();
-    }
     fabricCanvas.add(fabricVideo);
     fabricCanvas.setActiveObject(fabricVideo);
     fabricCanvas.renderAll();
@@ -255,12 +265,24 @@ export const addMediaFromUrl = async (
               ? (videoState?.duration as number)
               : 30,
         objectId: objectId,
-        data: { url },
+        data: {
+          url,
+          width: vWidth,
+          height: vHeight,
+        },
       });
       // Snap preview timeline to start so newly added short videos are immediately visible.
       setVideoState({
         currentTime: 0,
         startTime: 0,
+        endTime:
+          Number.isFinite(videoEl.duration) && videoEl.duration > 0
+            ? videoEl.duration
+            : 30,
+        duration:
+          Number.isFinite(videoEl.duration) && videoEl.duration > 0
+            ? videoEl.duration
+            : 30,
         isPlaying: false,
         videoUrl: url,
       });

@@ -201,7 +201,14 @@ export function Timeline() {
   };
 
   const togglePlay = () => {
-    if (!isPlaying && currentTime >= duration - 0.01) {
+    const hasActiveVideo = layers.some((layer) => {
+      if (layer.type !== "video") return false;
+      const layerStart = Number(layer.startTime || 0);
+      const layerEnd = layerStart + Number(layer.duration || 0);
+      return currentTime >= layerStart && currentTime < layerEnd;
+    });
+
+    if (!isPlaying && (!hasActiveVideo || currentTime >= duration - 0.01)) {
       const firstVideoStart = layers
         .filter((layer) => layer.type === "video")
         .reduce(

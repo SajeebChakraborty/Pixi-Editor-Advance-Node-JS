@@ -235,12 +235,40 @@ export const addMediaFromUrl = async (
     const objectId = forceObjectId || `vid_${Date.now()}`;
     const vWidth = videoEl.videoWidth || 1280;
     const vHeight = videoEl.videoHeight || 720;
-    const displayScale = Math.min(
-      1,
-      (baseWidth * 0.8) / vWidth,
-      (baseHeight * 0.8) / vHeight,
-      1280 / Math.max(vWidth, vHeight),
-    ) || 1;
+
+    let targetCanvas = fabricCanvas;
+    if (!silent) {
+      const currentStore = useEditorStore.getState();
+      currentStore
+        .getLayers()
+        .filter((layer: any) => layer.type === "video")
+        .forEach((layer: any) => currentStore.deleteLayer(layer.id));
+
+      currentStore.setCanvas({ width: vWidth, height: vHeight });
+      await new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      });
+
+      targetCanvas = await waitForLiveFabricCanvas();
+      if (!targetCanvas) {
+        videoEl.pause();
+        videoEl.removeAttribute("src");
+        videoEl.load();
+        toast.error("Canvas is still loading. Please try again in a moment.");
+        return null;
+      }
+    }
+
+    const targetWidth = silent ? baseWidth : vWidth;
+    const targetHeight = silent ? baseHeight : vHeight;
+    const displayScale = silent
+      ? Math.min(
+          1,
+          (targetWidth * 0.8) / vWidth,
+          (targetHeight * 0.8) / vHeight,
+          1280 / Math.max(vWidth, vHeight),
+        ) || 1
+      : 1;
     // The browser composites the real video element. Fabric only owns this
     // transparent object for selection and transforms.
     const transparentPixel = document.createElement("canvas");
@@ -248,8 +276,8 @@ export const addMediaFromUrl = async (
     transparentPixel.height = 1;
 
     const fabricVideo = new fabric.FabricImage(transparentPixel, {
-      left: (baseWidth - vWidth * displayScale) / 2,
-      top: (baseHeight - vHeight * displayScale) / 2,
+      left: silent ? (targetWidth - vWidth * displayScale) / 2 : 0,
+      top: silent ? (targetHeight - vHeight * displayScale) / 2 : 0,
       width: vWidth,
       height: vHeight,
       scaleX: displayScale,
@@ -268,11 +296,11 @@ export const addMediaFromUrl = async (
       videoEl.load();
     };
 
-    fabricCanvas.add(fabricVideo);
-    attachVideoOverlay(fabricCanvas, fabricVideo as any, videoEl);
-    fabricCanvas.setActiveObject(fabricVideo);
-    fabricCanvas.bringObjectToFront(fabricVideo);
-    fabricCanvas.requestRenderAll();
+    targetCanvas.add(fabricVideo);
+    attachVideoOverlay(targetCanvas, fabricVideo as any, videoEl);
+    targetCanvas.setActiveObject(fabricVideo);
+    targetCanvas.bringObjectToFront(fabricVideo);
+    targetCanvas.requestRenderAll();
 
     if (!silent) {
       const videoDuration =
@@ -281,25 +309,12 @@ export const addMediaFromUrl = async (
           : Number.isFinite(videoState?.duration) && (videoState?.duration || 0) > 0
             ? (videoState?.duration as number)
             : 30;
-      const existingVideoLayers = useEditorStore
-        .getState()
-        .getLayers()
-        .filter((layer: any) => layer.type === "video");
-      const startTime = existingVideoLayers.reduce(
-        (latestEnd: number, layer: any) =>
-          Math.max(
-            latestEnd,
-            Number(layer.startTime || 0) + Number(layer.duration || 0),
-          ),
-        0,
-      );
-
       addLayer({
         type: "video",
         name: videoDisplayName,
         locked: false,
         visible: true,
-        startTime,
+        startTime: 0,
         duration: videoDuration,
         objectId: objectId,
         data: {
@@ -312,17 +327,17 @@ export const addMediaFromUrl = async (
       });
       // Show the newly appended clip immediately.
       setVideoState({
-        currentTime: startTime,
+        currentTime: 0,
         startTime: 0,
-        endTime: startTime + videoDuration,
-        duration: startTime + videoDuration,
+        endTime: videoDuration,
+        duration: videoDuration,
         isPlaying: false,
         videoUrl: url,
       });
       fabricVideo.set({ visible: true, opacity: 1 });
       fabricVideo.setCoords();
-      fabricCanvas.setActiveObject(fabricVideo);
-      fabricCanvas.requestRenderAll();
+      targetCanvas.setActiveObject(fabricVideo);
+      targetCanvas.requestRenderAll();
       toast.success("Video added to canvas!");
     }
     return objectId;

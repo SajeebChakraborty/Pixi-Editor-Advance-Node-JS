@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { TemplateManager } from "@/lib/templates";
+import { exportArtboardDataUrl } from "@/lib/image-export";
 import { toast } from "sonner";
 import { useSearchParams } from "next/navigation";
 import {
@@ -66,20 +67,13 @@ export function TopBar() {
     return `${safeName || "pixizen-export"}-${width}x${height}.${extension}`;
   };
 
-  const getArtboardDataUrl = (
+  const getArtboardDataUrl = async (
     format: "png" | "jpeg",
     multiplier = 1,
     quality = 0.92,
   ) => {
     if (!fabricCanvas) return "";
-
-    const crop = (fabricCanvas as any).artboardExportBounds;
-    return fabricCanvas.toDataURL({
-      format,
-      quality,
-      multiplier,
-      ...(crop || {}),
-    });
+    return exportArtboardDataUrl(fabricCanvas, format, multiplier, quality);
   };
 
   const handleExportImage = async (
@@ -92,7 +86,7 @@ export function TopBar() {
     try {
       fabricCanvas.discardActiveObject();
       fabricCanvas.requestRenderAll();
-      const dataUrl = getArtboardDataUrl(format, multiplier, quality);
+      const dataUrl = await getArtboardDataUrl(format, multiplier, quality);
       const link = document.createElement("a");
       link.href = dataUrl;
       link.download = exportFileName(format === "png" ? "png" : "jpg");
@@ -210,7 +204,7 @@ export function TopBar() {
         if (!uploadResult.success) throw new Error(uploadResult.error);
         finalUrl = uploadResult.url!;
       } else {
-        const dataUrl = getArtboardDataUrl("png", 1);
+        const dataUrl = await getArtboardDataUrl("png", 1);
         const uploadResult = await uploadToDashboardAction(dataUrl, 'image');
         if (!uploadResult.success) throw new Error(uploadResult.error);
         finalUrl = uploadResult.url!;
@@ -245,7 +239,7 @@ export function TopBar() {
 
       const category = prompt("Enter category:", "General") || "General";
 
-      const thumb = getArtboardDataUrl("png", 0.2);
+      const thumb = await getArtboardDataUrl("png", 0.2);
 
       const template = TemplateManager.createTemplateFromCanvas(
         fabricCanvas,

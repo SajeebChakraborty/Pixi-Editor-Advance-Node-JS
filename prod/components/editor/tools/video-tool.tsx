@@ -4,7 +4,7 @@ import { useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { VideoEditorComplete } from "./video-editor-complete";
-import { Upload, Plus, Film, Play } from "lucide-react";
+import { Upload, Plus, Film, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { addMediaFromUrl } from "@/lib/editor-utils";
@@ -17,8 +17,9 @@ export function VideoTool() {
   const [selectedVideo, setSelectedVideo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [libraryVideos, setLibraryVideos] = useState<any[]>([]);
+  const [deletingVideoId, setDeletingVideoId] = useState<string | null>(null);
 
-  const { canvas, setVideoState } = useEditorStore();
+  const { canvas, setVideoState, removeRecentAsset } = useEditorStore();
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
@@ -48,7 +49,41 @@ export function VideoTool() {
 
   const loadVideos = async () => {
     const videos = await AssetService.getAssets("video");
-    setLibraryVideos(videos);
+    setLibraryVideos(videos.map((video) => ({ ...video, persisted: true })));
+  };
+
+  const handleDeleteLibraryVideo = async (
+    event: React.MouseEvent<HTMLButtonElement>,
+    video: any,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (deletingVideoId) return;
+
+    setDeletingVideoId(video.id);
+    try {
+      if (video.persisted) {
+        const deleted = await AssetService.deleteAsset(video.id);
+        if (!deleted) {
+          toast.error("Could not delete video from Stock/Library.");
+          return;
+        }
+      }
+
+      setLibraryVideos((previous) =>
+        previous.filter((item) => item.id !== video.id),
+      );
+      removeRecentAsset(video.url);
+      if (selectedVideo === video.url) setSelectedVideo(null);
+      if (typeof video.url === "string" && video.url.startsWith("blob:")) {
+        URL.revokeObjectURL(video.url);
+      }
+      toast.success("Video deleted from Stock/Library.");
+    } catch {
+      toast.error("Could not delete video from Stock/Library.");
+    } finally {
+      setDeletingVideoId(null);
+    }
   };
 
   const processFile = async (file: File) => {
@@ -251,6 +286,18 @@ export function VideoTool() {
                   className="group relative aspect-video rounded-lg overflow-hidden bg-black/50 cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
                   onClick={() => handleAddVideoToCanvas(video.url)}
                 >
+                  <button
+                    type="button"
+                    aria-label={`Delete ${video.name || "video"}`}
+                    title="Delete from Stock/Library"
+                    disabled={deletingVideoId === video.id}
+                    onClick={(event) => {
+                      void handleDeleteLibraryVideo(event, video);
+                    }}
+                    className="absolute right-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-red-600 text-white shadow-md transition-colors hover:bg-red-500 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
                   <video
                     src={video.url}
                     className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity"

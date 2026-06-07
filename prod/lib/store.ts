@@ -401,6 +401,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         if (layer && layer.objectId) {
           const obj = fabricCanvas.getObjects().find((o: any) => o.name === layer.objectId)
           if (obj) {
+            ;(obj as any)._disposeVideo?.()
             fabricCanvas.remove(obj)
             fabricCanvas.requestRenderAll()
           }

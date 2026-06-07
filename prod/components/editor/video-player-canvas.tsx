@@ -43,8 +43,13 @@ export function VideoPlayerCanvas() {
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const fabricRef = useRef<FabricCanvas | null>(null);
+  const videoResolutionRef = useRef({ width: 1920, height: 1080 });
   const [isExported, setIsExported] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
+  const [videoResolution, setVideoResolution] = useState({
+    width: 1920,
+    height: 1080,
+  });
 
   // Effects State
   const [filters, setFilters] = useState({
@@ -65,13 +70,28 @@ export function VideoPlayerCanvas() {
     endTime,
   } = videoState;
 
+  const syncCanvasSize = useCallback(() => {
+    const canvas = fabricRef.current;
+    const container = containerRef.current;
+    if (!canvas || !container) return;
+
+    const { width, height } = container.getBoundingClientRect();
+    canvas.setDimensions(videoResolutionRef.current, { backstoreOnly: true });
+    canvas.setDimensions(
+      { width: `${width}px`, height: `${height}px` },
+      { cssOnly: true },
+    );
+    canvas.setZoom(1);
+    canvas.requestRenderAll();
+  }, []);
+
   // Initialize Fabric Overlay
   useEffect(() => {
     if (!overlayCanvasRef.current) return;
 
     const canvas = new FabricCanvas(overlayCanvasRef.current, {
-      width: 1920,
-      height: 1080,
+      width: videoResolutionRef.current.width,
+      height: videoResolutionRef.current.height,
       selection: true,
       backgroundColor: "transparent",
       preserveObjectStacking: true,
@@ -79,24 +99,15 @@ export function VideoPlayerCanvas() {
 
     fabricRef.current = canvas;
     setFabricCanvas(canvas);
-
-    const syncSize = () => {
-      if (containerRef.current && canvas) {
-        const { width, height } = containerRef.current.getBoundingClientRect();
-        canvas.setDimensions({ width, height }, { backstoreOnly: false });
-        canvas.setZoom(width / 1920);
-      }
-    };
-
-    window.addEventListener("resize", syncSize);
-    setTimeout(syncSize, 100);
+    window.addEventListener("resize", syncCanvasSize);
+    setTimeout(syncCanvasSize, 100);
 
     return () => {
       canvas.dispose();
       setFabricCanvas(null);
-      window.removeEventListener("resize", syncSize);
+      window.removeEventListener("resize", syncCanvasSize);
     };
-  }, []);
+  }, [setFabricCanvas, syncCanvasSize]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -117,6 +128,15 @@ export function VideoPlayerCanvas() {
     video.src = resolved;
     video.load();
 
+    const onLoadedMetadata = () => {
+      const width = video.videoWidth;
+      const height = video.videoHeight;
+      if (width > 0 && height > 0) {
+        videoResolutionRef.current = { width, height };
+        setVideoResolution({ width, height });
+        requestAnimationFrame(syncCanvasSize);
+      }
+    };
     const onError = () => {
       const code = video.error?.code;
       const msg =
@@ -127,9 +147,13 @@ export function VideoPlayerCanvas() {
             : "Could not load video (check URL or network).";
       toast.error(msg);
     };
+    video.addEventListener("loadedmetadata", onLoadedMetadata);
     video.addEventListener("error", onError);
-    return () => video.removeEventListener("error", onError);
-  }, [videoUrl]);
+    return () => {
+      video.removeEventListener("loadedmetadata", onLoadedMetadata);
+      video.removeEventListener("error", onError);
+    };
+  }, [syncCanvasSize, videoUrl]);
 
   // Sync Video with Timeline (Master Clock)
   useEffect(() => {
@@ -180,33 +204,57 @@ export function VideoPlayerCanvas() {
     const layers = getLayers();
     const videoLayers = layers.filter((l) => l.type === "video");
 
-    // Find active video layer
-    const activeLayer = videoLayers.find(
-      (l) =>
-        currentTime >= (l.startTime || 0) &&
-        currentTime < (l.startTime || 0) + (l.duration || 0),
-    );
+    // Find active video layer - include tolerance for exact boundary
+    const activeLayer = videoLayers.find((l) => {
+      const layerStart = l.startTime || 0;
+      const layerEnd = layerStart + (l.duration || 0);
+      const tolerance = 0.1;
+      return currentTime >= layerStart - tolerance && currentTime < layerEnd + tolerance;
+    });
+    const retainedLayer = activeLayer
+      ? null
+      : videoLayers
+          .filter(
+            (layer) =>
+              currentTime >=
+              Number(layer.startTime || 0) + Number(layer.duration || 0),
+          )
+          .sort(
+            (left, right) =>
+              Number(right.startTime || 0) - Number(left.startTime || 0),
+          )[0];
+    const visibleLayer = activeLayer || retainedLayer;
 
-    if (activeLayer) {
+    if (visibleLayer) {
       // Calculate target video time based on offset and layer start
-      const offset = currentTime - (activeLayer.startTime || 0);
-      const targetTime = (activeLayer.mediaStart || 0) + offset;
+      const offset = activeLayer
+        ? currentTime - (activeLayer.startTime || 0)
+        : Math.max(0, Number(visibleLayer.duration || 0) - 0.001);
+      const targetTime = (visibleLayer.mediaStart || 0) + offset;
 
       // Sync video state
       if (Math.abs(video.currentTime - targetTime) > 0.2) {
         video.currentTime = targetTime;
       }
 
-      if (video.paused && isPlaying) {
-        video.play().catch(() => {});
+      if (activeLayer && video.paused && isPlaying) {
+        video.play().catch(() => { });
+      } else if (!activeLayer && !video.paused) {
+        video.pause();
       }
       video.style.opacity = "1";
+      video.style.display = "block";
     } else {
-      // No video at this time (gap)
+      // No video at this time (gap) - but keep display block for potential visibility
       video.style.opacity = "0";
       if (!video.paused) video.pause();
     }
-  }, [currentTime, isPlaying, getLayers, videoUrl]);
+
+    // Ensure fabric canvas is rendered when video visibility changes
+    if (fabricRef.current) {
+      fabricRef.current.requestRenderAll();
+    }
+  }, [currentTime, isPlaying, videoUrl]);
 
   useEffect(() => {
     if (videoRef.current) {
@@ -220,6 +268,33 @@ export function VideoPlayerCanvas() {
       videoRef.current.currentTime = val[0];
       setVideoState({ currentTime: val[0] });
     }
+  };
+
+  const togglePlayback = () => {
+    if (isPlaying) {
+      setVideoState({ isPlaying: false });
+      return;
+    }
+
+    const videoLayers = getLayers().filter((layer) => layer.type === "video");
+    const hasActiveVideo = videoLayers.some((layer) => {
+      const layerStart = Number(layer.startTime || 0);
+      const layerEnd = layerStart + Number(layer.duration || 0);
+      return currentTime >= layerStart && currentTime < layerEnd;
+    });
+    const firstVideoStart = videoLayers.reduce(
+      (earliest, layer) =>
+        Math.min(earliest, Number(layer.startTime || 0)),
+      Number.POSITIVE_INFINITY,
+    );
+
+    setVideoState({
+      currentTime:
+        !hasActiveVideo && Number.isFinite(firstVideoStart)
+          ? firstVideoStart
+          : currentTime,
+      isPlaying: true,
+    });
   };
 
   const formatTime = (time: number) => {
@@ -485,7 +560,10 @@ export function VideoPlayerCanvas() {
           <div className="flex-1 flex items-center justify-center relative">
             <div
               ref={containerRef}
-              className="relative aspect-video w-full max-w-4xl bg-black rounded-2xl overflow-hidden shadow-[0_0_100px_rgba(37,99,235,0.1)] border border-white/10 group"
+              className="relative w-full max-w-4xl bg-black rounded-2xl overflow-hidden shadow-[0_0_100px_rgba(37,99,235,0.1)] border border-white/10 group"
+              style={{
+                aspectRatio: `${videoResolution.width} / ${videoResolution.height}`,
+              }}
             >
               <video
                 ref={videoRef}
@@ -738,7 +816,7 @@ export function VideoPlayerCanvas() {
       {/* Control Rail */}
       <div className="h-16 border-t border-white/5 bg-[#0f0f12] flex items-center px-10 gap-8">
         <button
-          onClick={() => setVideoState({ isPlaying: !isPlaying })}
+          onClick={togglePlayback}
           className="w-10 h-10 rounded-full flex items-center justify-center bg-white text-black transition-transform hover:scale-105 active:scale-95"
         >
           {isPlaying ? (
