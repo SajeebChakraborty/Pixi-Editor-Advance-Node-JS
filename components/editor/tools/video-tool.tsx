@@ -253,10 +253,10 @@ export function VideoTool() {
     const libraryItem = exists
       ? null
       : {
-          id: `ext_${Date.now()}`,
-          name: "External Video",
-          url: normalized,
-        };
+        id: `ext_${Date.now()}`,
+        name: "External Video",
+        url: normalized,
+      };
 
     if (libraryItem) {
       setLibraryVideos((prev) => [libraryItem, ...prev]);
@@ -330,11 +330,10 @@ export function VideoTool() {
             onDragOver={handleDragOver}
             onDragLeave={handleDragLeave}
             onDrop={handleDrop}
-            className={`w-full h-24 border-2 border-dashed transition-all flex flex-col gap-2 ${
-              isDragging
+            className={`w-full h-24 border-2 border-dashed transition-all flex flex-col gap-2 ${isDragging
                 ? "border-[#8b5cf6] bg-[#8b5cf6]/10 text-white"
                 : "border-white/10 bg-[#222] hover:bg-[#2a2a2a] text-gray-400 hover:text-white hover:border-[#8b5cf6]/50"
-            }`}
+              }`}
             variant="ghost"
           >
             <div className="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center pointer-events-none">
@@ -432,7 +431,7 @@ export function VideoTool() {
         </div>
       </div>
 
-      <div className="space-y-2">
+      {/* <div className="space-y-2">
         <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-1">
           External Link
         </h3>
@@ -454,7 +453,7 @@ export function VideoTool() {
             <Plus className="w-4 h-4" />
           </Button>
         </div>
-      </div>
+      </div> */}
 
       <div className="rounded-xl bg-[#222] p-4 space-y-2 border border-white/5">
         <div className="flex items-center gap-2 text-white text-xs font-bold">

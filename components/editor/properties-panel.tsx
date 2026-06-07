@@ -11,7 +11,9 @@ import {
   Copy,
   Eye,
   EyeOff,
+  Layers3,
   Lock,
+  MoveHorizontal,
   Trash2,
   Unlock,
 } from "lucide-react";
@@ -176,7 +178,8 @@ export function PropertiesPanel() {
     <div className="flex flex-col h-full bg-[#000000] text-white dark">
       <div className="flex flex-col gap-8">
         <div className="space-y-4">
-          <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest px-1">
+          <h3 className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-2 text-[11px] font-bold uppercase tracking-widest text-gray-200">
+            <MoveHorizontal className="h-3.5 w-3.5 text-violet-400" />
             Align
           </h3>
           <div className="grid grid-cols-3 gap-2">
@@ -240,7 +243,8 @@ export function PropertiesPanel() {
         {/* Arrange Controls */}
         {selectedLayer && (
           <div className="space-y-4">
-            <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest px-1">
+            <h3 className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-2 text-[11px] font-bold uppercase tracking-widest text-gray-200">
+              <Layers3 className="h-3.5 w-3.5 text-violet-400" />
               Arrange
             </h3>
             <div className="grid grid-cols-4 gap-1">

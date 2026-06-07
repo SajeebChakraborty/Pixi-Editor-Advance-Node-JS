@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import {
+  CirclePlay,
+  Eye,
   Play,
   Pause,
   RotateCcw,
@@ -254,10 +256,11 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   };
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 pb-12">
       {/* Playback Controls */}
       <div className="space-y-3">
-        <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest px-1">
+        <h3 className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-2 text-[11px] font-bold uppercase tracking-widest text-gray-200">
+          <CirclePlay className="h-3.5 w-3.5 text-violet-400" />
           Playback
         </h3>
         <div className="flex items-center gap-2">
@@ -343,13 +346,14 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
 
       {/* Trimming */}
       <div className="space-y-3 pt-2 border-t border-white/5">
-        <div className="flex items-center justify-between gap-3 px-1">
-          <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest">
+        <div className="flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-2">
+          <h3 className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-widest text-gray-200">
+            <Scissors className="h-3.5 w-3.5 text-violet-400" />
             Trim Video
           </h3>
           <button
             onClick={resetTrim}
-            className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-gray-500 hover:text-white"
+            className="flex items-center gap-1 text-[9px] font-bold uppercase tracking-wider text-gray-400 transition-colors hover:text-white"
           >
             <RotateCcw className="w-3 h-3" />
             Reset
@@ -424,7 +428,8 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
 
       {/* Transform */}
       <div className="space-y-3 pt-2 border-t border-white/5">
-        <h3 className="text-[11px] font-bold text-gray-500 uppercase tracking-widest px-1">
+        <h3 className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-2 text-[11px] font-bold uppercase tracking-widest text-gray-200">
+          <Eye className="h-3.5 w-3.5 text-violet-400" />
           Appearance
         </h3>
         <div className="space-y-2">

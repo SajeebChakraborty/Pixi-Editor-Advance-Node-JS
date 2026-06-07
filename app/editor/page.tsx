@@ -392,7 +392,7 @@ function EditorContent() {
 
         {/* Right Sidebar */}
         <aside className="w-[320px] flex-shrink-0 bg-[#000000] flex flex-col overflow-hidden border-l border-white/10">
-          <div className="flex-1 overflow-y-auto no-scrollbar p-5">
+          <div className="flex-1 overflow-y-auto no-scrollbar px-5 pt-5 pb-12">
             <PropertiesPanel />
           </div>
         </aside>
