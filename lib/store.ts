@@ -46,6 +46,15 @@ export interface CanvasState {
   historyIndex: number
 }
 
+type CanvasHistorySnapshot = {
+  fabric: any
+  pages: EditorPage[]
+  activePageId: string
+  selectedLayerId: string | null
+  width: number
+  height: number
+}
+
 export interface Asset {
   id: string
   url: string
@@ -160,6 +169,81 @@ const valuesEqual = (left: unknown, right: unknown) => {
   return typeof left === "number" && typeof right === "number"
     ? Math.abs(left - right) < 0.0001
     : false
+}
+
+const clonePages = (pages: EditorPage[]) =>
+  pages.map((page) => ({
+    ...page,
+    layers: page.layers.map((layer) => ({
+      ...layer,
+      data:
+        layer.data && typeof layer.data === "object"
+          ? { ...layer.data }
+          : layer.data,
+    })),
+  }))
+
+const getFabricObjectNames = (fabricSnapshot: any) =>
+  new Set(
+    ((fabricSnapshot?.objects || []) as any[])
+      .map((object) => object?.name)
+      .filter((name): name is string => typeof name === "string" && name.length > 0)
+  )
+
+const isLayerManagedObjectName = (name: string) =>
+  /^(img|vid|text|emoji|circle|square|star|heart|triangle|line|arrow|bolt)_/.test(name)
+
+const shouldSkipLayerIntermediateHistory = (
+  fabricSnapshot: any,
+  layers: Layer[]
+) => {
+  const objectNames = getFabricObjectNames(fabricSnapshot)
+  const layerObjectIds = new Set(
+    layers
+      .map((layer) => layer.objectId)
+      .filter((objectId): objectId is string => Boolean(objectId))
+  )
+
+  for (const objectName of objectNames) {
+    if (isLayerManagedObjectName(objectName) && !layerObjectIds.has(objectName)) {
+      return true
+    }
+  }
+
+  for (const objectId of layerObjectIds) {
+    if (isLayerManagedObjectName(objectId) && !objectNames.has(objectId)) {
+      return true
+    }
+  }
+
+  return false
+}
+
+const parseHistorySnapshot = (snapshot: string): CanvasHistorySnapshot | null => {
+  try {
+    const parsed = JSON.parse(snapshot)
+    if (parsed?.fabric && Array.isArray(parsed?.pages)) {
+      return parsed as CanvasHistorySnapshot
+    }
+
+    return {
+      fabric: parsed,
+      pages: [],
+      activePageId: "",
+      selectedLayerId: null,
+      width: 0,
+      height: 0,
+    }
+  } catch {
+    return null
+  }
+}
+
+const disposeVideoObjects = (fabricCanvas: Canvas) => {
+  fabricCanvas.getObjects().forEach((object: any) => {
+    object?._disposeVideo?.()
+    object?._cleanupVideoOverlay?.()
+  })
 }
 
 // Initial canvas state
@@ -406,7 +490,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           : p
       )
 
-      setTimeout(() => get().recalculateTotalDuration(), 0)
+      setTimeout(() => {
+        get().recalculateTotalDuration()
+        const fabricCanvas = get().canvas.fabricCanvas
+        if (fabricCanvas) {
+          get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
+        }
+      }, 0)
 
       return {
         canvas: {
@@ -447,7 +537,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           : p
       )
       
-      setTimeout(() => get().recalculateTotalDuration(), 0)
+      setTimeout(() => {
+        get().recalculateTotalDuration()
+        const fabricCanvas = get().canvas.fabricCanvas
+        if (fabricCanvas) {
+          get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
+        }
+      }, 0)
 
       return {
         canvas: {
@@ -736,13 +832,39 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   saveToHistory: (snapshot) => {
     set((state) => {
+      const parsed = parseHistorySnapshot(snapshot)
+      if (!parsed) return state
+
+      const activePage =
+        state.canvas.pages.find((page) => page.id === state.canvas.activePageId) ||
+        state.canvas.pages[0]
+      const activeLayers = activePage?.layers || []
+      const fabricSnapshot = parsed.fabric
+
+      if (shouldSkipLayerIntermediateHistory(fabricSnapshot, activeLayers)) {
+        return state
+      }
+
+      const historySnapshot: CanvasHistorySnapshot = {
+        fabric: fabricSnapshot,
+        pages: clonePages(state.canvas.pages),
+        activePageId: state.canvas.activePageId,
+        selectedLayerId: state.canvas.selectedLayerId,
+        width: state.canvas.width,
+        height: state.canvas.height,
+      }
+      const serializedSnapshot = JSON.stringify(historySnapshot)
+
       // Don't save if it's the same as the current head
-      if (state.canvas.historyIndex >= 0 && state.canvas.history[state.canvas.historyIndex] === snapshot) {
+      if (
+        state.canvas.historyIndex >= 0 &&
+        state.canvas.history[state.canvas.historyIndex] === serializedSnapshot
+      ) {
         return state
       }
 
       const newHistory = state.canvas.history.slice(0, state.canvas.historyIndex + 1)
-      newHistory.push(snapshot)
+      newHistory.push(serializedSnapshot)
       
       // Limit history to 50 steps
       if (newHistory.length > 50) {
@@ -762,35 +884,57 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   undo: () => {
     const { historyIndex, history, fabricCanvas } = get().canvas
     if (historyIndex > 0) {
-      const prevSnapshot = history[historyIndex - 1]
+      const prevSnapshot = parseHistorySnapshot(history[historyIndex - 1])
       if (fabricCanvas && prevSnapshot) {
         // We use a flag to prevent saving back to history while loading
         ;(fabricCanvas as any).isHistoryLoading = true
-        fabricCanvas.loadFromJSON(JSON.parse(prevSnapshot)).then(() => {
+        disposeVideoObjects(fabricCanvas)
+        fabricCanvas.loadFromJSON(prevSnapshot.fabric).then(() => {
+          fabricCanvas.discardActiveObject()
           fabricCanvas.renderAll()
           ;(fabricCanvas as any).isHistoryLoading = false
         })
       }
       set((state) => ({
-        canvas: { ...state.canvas, historyIndex: state.canvas.historyIndex - 1 },
+        canvas: {
+          ...state.canvas,
+          pages: prevSnapshot?.pages.length ? clonePages(prevSnapshot.pages) : state.canvas.pages,
+          activePageId: prevSnapshot?.activePageId || state.canvas.activePageId,
+          selectedLayerId: prevSnapshot?.selectedLayerId || null,
+          width: prevSnapshot?.width || state.canvas.width,
+          height: prevSnapshot?.height || state.canvas.height,
+          historyIndex: state.canvas.historyIndex - 1,
+        },
       }))
+      setTimeout(() => get().recalculateTotalDuration(), 0)
     }
   },
 
   redo: () => {
     const { historyIndex, history, fabricCanvas } = get().canvas
     if (historyIndex < history.length - 1) {
-      const nextSnapshot = history[historyIndex + 1]
+      const nextSnapshot = parseHistorySnapshot(history[historyIndex + 1])
       if (fabricCanvas && nextSnapshot) {
         ;(fabricCanvas as any).isHistoryLoading = true
-        fabricCanvas.loadFromJSON(JSON.parse(nextSnapshot)).then(() => {
+        disposeVideoObjects(fabricCanvas)
+        fabricCanvas.loadFromJSON(nextSnapshot.fabric).then(() => {
+          fabricCanvas.discardActiveObject()
           fabricCanvas.renderAll()
           ;(fabricCanvas as any).isHistoryLoading = false
         })
       }
       set((state) => ({
-        canvas: { ...state.canvas, historyIndex: state.canvas.historyIndex + 1 },
+        canvas: {
+          ...state.canvas,
+          pages: nextSnapshot?.pages.length ? clonePages(nextSnapshot.pages) : state.canvas.pages,
+          activePageId: nextSnapshot?.activePageId || state.canvas.activePageId,
+          selectedLayerId: nextSnapshot?.selectedLayerId || null,
+          width: nextSnapshot?.width || state.canvas.width,
+          height: nextSnapshot?.height || state.canvas.height,
+          historyIndex: state.canvas.historyIndex + 1,
+        },
       }))
+      setTimeout(() => get().recalculateTotalDuration(), 0)
     }
   },
 

@@ -7,7 +7,6 @@ import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import {
   CirclePlay,
-  Eye,
   Play,
   Pause,
   RotateCcw,
@@ -293,6 +292,20 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
             </div>
           </div>
         </div>
+        <div className="space-y-2">
+          <div className="flex items-center justify-between">
+            <Label className="text-xs text-gray-300">Opacity</Label>
+            <span className="text-[10px] text-gray-500">
+              {Math.round(opacity * 100)}%
+            </span>
+          </div>
+          <Slider
+            value={[opacity]}
+            max={1}
+            step={0.01}
+            onValueChange={(vals) => handleOpacity(vals[0])}
+          />
+        </div>
       </div>
 
       {/* Audio & Speed */}
@@ -426,27 +439,6 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
         </div>
       </div>
 
-      {/* Transform */}
-      <div className="space-y-3 pt-2 border-t border-white/5">
-        <h3 className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-2 text-[11px] font-bold uppercase tracking-widest text-gray-200">
-          <Eye className="h-3.5 w-3.5 text-violet-400" />
-          Appearance
-        </h3>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label className="text-xs text-gray-300">Opacity</Label>
-            <span className="text-[10px] text-gray-500">
-              {Math.round(opacity * 100)}%
-            </span>
-          </div>
-          <Slider
-            value={[opacity]}
-            max={1}
-            step={0.01}
-            onValueChange={(vals) => handleOpacity(vals[0])}
-          />
-        </div>
-      </div>
     </div>
   );
 }
