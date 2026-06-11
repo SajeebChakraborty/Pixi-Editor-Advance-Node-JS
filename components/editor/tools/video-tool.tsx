@@ -19,7 +19,13 @@ export function VideoTool() {
   const [libraryVideos, setLibraryVideos] = useState<any[]>([]);
   const [deletingVideoId, setDeletingVideoId] = useState<string | null>(null);
 
-  const { canvas, setVideoState, recentAssets, removeRecentAsset } =
+  const {
+    canvas,
+    videoFabricCanvas,
+    setVideoState,
+    videoRecentAssets,
+    removeRecentAsset,
+  } =
     useEditorStore();
   const [isDragging, setIsDragging] = useState(false);
 
@@ -28,7 +34,7 @@ export function VideoTool() {
   }, []);
 
   useEffect(() => {
-    const recentMedia = recentAssets.filter(
+    const recentMedia = videoRecentAssets.filter(
       (asset) => asset.type === "video" || asset.type === "image",
     );
     setLibraryVideos((previous) => {
@@ -39,7 +45,7 @@ export function VideoTool() {
           combined.findIndex((candidate) => candidate.url === item.url) === index,
       );
     });
-  }, [recentAssets]);
+  }, [videoRecentAssets]);
 
   useEffect(() => {
     const queryVideoUrl = searchParams.get("video_url");
@@ -96,7 +102,7 @@ export function VideoTool() {
       setLibraryVideos((previous) =>
         previous.filter((item) => item.id !== video.id),
       );
-      removeRecentAsset(video.url);
+      removeRecentAsset(video.url, "video");
       if (selectedVideo === video.url) setSelectedVideo(null);
       if (typeof video.url === "string" && video.url.startsWith("blob:")) {
         URL.revokeObjectURL(video.url);
@@ -169,6 +175,7 @@ export function VideoTool() {
         false,
         undefined,
         file.name,
+        videoFabricCanvas,
       );
       setLoading(false);
 
@@ -186,7 +193,7 @@ export function VideoTool() {
           type: "image",
           url: localUrl,
           name: file.name,
-        });
+        }, "video");
         toast.success("Image overlay added to video.", { id: toastId });
       } else {
         URL.revokeObjectURL(localUrl);
@@ -278,6 +285,7 @@ export function VideoTool() {
       false,
       undefined,
       libraryVideos.find((video) => video.url === targetUrl)?.name,
+      store.videoFabricCanvas,
     );
     if (!url) setSelectedVideo(null); // Only clear selection if added from editor, keep library open
     return Boolean(objectId);
@@ -369,6 +377,7 @@ export function VideoTool() {
                         false,
                         undefined,
                         video.name,
+                        useEditorStore.getState().videoFabricCanvas,
                       );
                       return;
                     }

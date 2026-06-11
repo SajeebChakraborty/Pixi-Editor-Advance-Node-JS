@@ -1,6 +1,10 @@
 "use client";
 
-import { useEditorStore } from "@/lib/store";
+import {
+  findMergeableMediaPair,
+  type Layer,
+  useEditorStore,
+} from "@/lib/store";
 import {
   Play,
   Pause,
@@ -15,10 +19,163 @@ import {
   Image as ImageIcon,
   Plus,
   Trash2,
+  Combine,
 } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
 import { Slider } from "@/components/ui/slider";
+import {
+  resolveVideoPlaybackUrl,
+  videoNeedsCrossOrigin,
+} from "@/lib/video-playback-url";
+import { toast } from "sonner";
+import {
+  buildVideoComposition,
+  type SceneTransitionType,
+} from "@/lib/video-composition";
+
+const videoFrameCache = new Map<string, Promise<string[]>>();
+
+function hasMergedNeighbor(
+  layer: Layer,
+  trackLayers: Layer[],
+  side: "before" | "after",
+) {
+  const mergeGroupId = layer.data?.mergeGroupId;
+  if (!mergeGroupId) return false;
+
+  const layerStart = Number(layer.startTime || 0);
+  const layerEnd = layerStart + Number(layer.duration || 0);
+  return trackLayers.some((candidate) => {
+    if (
+      candidate.id === layer.id ||
+      candidate.data?.mergeGroupId !== mergeGroupId
+    ) {
+      return false;
+    }
+    const candidateStart = Number(candidate.startTime || 0);
+    const candidateEnd =
+      candidateStart + Number(candidate.duration || 0);
+    return side === "before"
+      ? Math.abs(candidateEnd - layerStart) <= 0.01
+      : Math.abs(layerEnd - candidateStart) <= 0.01;
+  });
+}
+
+function captureVideoFrames(url: string) {
+  const cached = videoFrameCache.get(url);
+  if (cached) return cached;
+
+  const capturePromise = new Promise<string[]>((resolve) => {
+    const video = document.createElement("video");
+    const resolvedUrl = resolveVideoPlaybackUrl(url);
+    if (videoNeedsCrossOrigin(resolvedUrl)) {
+      video.crossOrigin = "anonymous";
+    }
+    video.preload = "metadata";
+    video.muted = true;
+    video.playsInline = true;
+
+    const cleanup = () => {
+      video.pause();
+      video.removeAttribute("src");
+      video.load();
+    };
+
+    video.onerror = () => {
+      cleanup();
+      resolve([]);
+    };
+    video.onloadedmetadata = async () => {
+      const sourceDuration = Number.isFinite(video.duration)
+        ? video.duration
+        : 0;
+      const sampleCount = 6;
+      const nextFrames: string[] = [];
+      const canvas = document.createElement("canvas");
+      canvas.width = 160;
+      canvas.height = 90;
+      const context = canvas.getContext("2d");
+      if (!context || sourceDuration <= 0) {
+        cleanup();
+        resolve([]);
+        return;
+      }
+
+      for (let index = 0; index < sampleCount; index += 1) {
+        const sampleTime =
+          Math.max(0, sourceDuration - 0.05) *
+          (index / (sampleCount - 1));
+
+        await new Promise<void>((finishSeek) => {
+          if (Math.abs(video.currentTime - sampleTime) < 0.01) {
+            finishSeek();
+            return;
+          }
+          let timeoutId = 0;
+          const finish = () => {
+            window.clearTimeout(timeoutId);
+            video.removeEventListener("seeked", finish);
+            finishSeek();
+          };
+          timeoutId = window.setTimeout(finish, 1200);
+          video.addEventListener("seeked", finish, { once: true });
+          video.currentTime = sampleTime;
+        });
+
+        try {
+          context.drawImage(video, 0, 0, canvas.width, canvas.height);
+          nextFrames.push(canvas.toDataURL("image/jpeg", 0.6));
+        } catch {
+          break;
+        }
+      }
+
+      cleanup();
+      resolve(nextFrames);
+    };
+    video.src = resolvedUrl;
+    video.load();
+  });
+
+  videoFrameCache.set(url, capturePromise);
+  return capturePromise;
+}
+
+function VideoFrameStrip({ url }: { url?: string }) {
+  const [frames, setFrames] = useState<string[]>([]);
+
+  useEffect(() => {
+    if (!url) {
+      setFrames([]);
+      return;
+    }
+
+    let cancelled = false;
+    void captureVideoFrames(url).then((nextFrames) => {
+      if (!cancelled) setFrames(nextFrames);
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [url]);
+
+  if (frames.length === 0) return null;
+
+  return (
+    <div className="absolute inset-0 flex overflow-hidden opacity-55 pointer-events-none">
+      {frames.map((frame, index) => (
+        <img
+          key={`${frame.slice(-16)}-${index}`}
+          src={frame}
+          alt=""
+          className="h-full min-w-0 flex-1 object-cover"
+        />
+      ))}
+    </div>
+  );
+}
 
 export function Timeline() {
   const {
@@ -27,20 +184,31 @@ export function Timeline() {
     videoState,
     setVideoState,
     splitLayer,
+    mergeLayer,
     updateLayer,
+    reorderVideoScene,
+    setVideoSceneTransition,
     selectLayer,
     deleteLayer,
     addLayer,
   } = useEditorStore();
   const layers = getLayers();
+  const composition = buildVideoComposition(layers);
 
   const selectedLayerId = canvas.selectedLayerId;
   const selectedLayer = layers.find((l) => l.id === selectedLayerId);
   const isTrimmable = true; // All layers can be trimmed/split
+  const canMergeSelected = Boolean(
+    selectedLayerId && findMergeableMediaPair(layers, selectedLayerId),
+  );
 
   const [zoom, setZoom] = useState(100);
   const containerRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
+  const pendingSceneReorderRef = useRef<{
+    layerId: string;
+    targetIndex: number;
+  } | null>(null);
   const [dragState, setDragState] = useState<{
     type: "move" | "resize-start" | "resize-end";
     layerId: string;
@@ -49,9 +217,10 @@ export function Timeline() {
     originalStart: number;
     originalDuration: number;
     originalTrack: number;
+    originalMediaStart: number;
   } | null>(null);
 
-  const duration = videoState.duration || 30; // Default to 30s if no video
+  const duration = composition.duration || videoState.duration || 30;
   const currentTime = videoState.currentTime;
   const isPlaying = videoState.isPlaying;
 
@@ -79,6 +248,27 @@ export function Timeline() {
   };
 
   const togglePlay = () => {
+    const hasActiveVideo = layers.some((layer) => {
+      if (layer.type !== "video") return false;
+      const layerStart = Number(layer.startTime || 0);
+      const layerEnd = layerStart + Number(layer.duration || 0);
+      return currentTime >= layerStart && currentTime < layerEnd;
+    });
+
+    if (!isPlaying && (!hasActiveVideo || currentTime >= duration - 0.01)) {
+      const firstVideoStart = layers
+        .filter((layer) => layer.type === "video")
+        .reduce(
+          (earliest, layer) =>
+            Math.min(earliest, Number(layer.startTime || 0)),
+          Number.POSITIVE_INFINITY,
+        );
+      setVideoState({
+        currentTime: Number.isFinite(firstVideoStart) ? firstVideoStart : 0,
+        isPlaying: true,
+      });
+      return;
+    }
     setVideoState({ isPlaying: !isPlaying });
   };
 
@@ -106,7 +296,9 @@ export function Timeline() {
       originalStart: layer.startTime || 0,
       originalDuration: layer.duration || duration,
       originalTrack: layer.track ?? 0,
+      originalMediaStart: layer.mediaStart || 0,
     });
+    pendingSceneReorderRef.current = null;
     selectLayer(layerId);
   };
 
@@ -128,6 +320,7 @@ export function Timeline() {
       originalStart: layer.startTime || 0,
       originalDuration: layer.duration || duration,
       originalTrack: layer.track ?? 0,
+      originalMediaStart: layer.mediaStart || 0,
     });
   };
 
@@ -141,6 +334,32 @@ export function Timeline() {
       const deltaTime = (deltaPixels / totalWidthPixels) * duration;
 
       if (dragState.type === "move") {
+        const layer = layers.find((item) => item.id === dragState.layerId);
+        if (layer?.type === "video") {
+          const draggedCenter =
+            dragState.originalStart +
+            dragState.originalDuration / 2 +
+            deltaTime;
+          const targetIndex = composition.scenes.reduce(
+            (closestIndex, scene, index) => {
+              const currentDistance = Math.abs(
+                draggedCenter -
+                  (composition.scenes[closestIndex]?.timelineStart || 0),
+              );
+              const nextDistance = Math.abs(
+                draggedCenter - scene.timelineStart,
+              );
+              return nextDistance < currentDistance ? index : closestIndex;
+            },
+            0,
+          );
+          pendingSceneReorderRef.current = {
+            layerId: dragState.layerId,
+            targetIndex,
+          };
+          return;
+        }
+
         let newStart = dragState.originalStart + deltaTime;
         // Clamp
         newStart = Math.max(
@@ -157,30 +376,40 @@ export function Timeline() {
           track: newTrack,
         });
       } else if (dragState.type === "resize-start") {
-        let newStart = dragState.originalStart + deltaTime;
-        let newDuration = dragState.originalDuration - deltaTime;
-
-        if (newStart < 0) {
-          newDuration += newStart;
-          newStart = 0;
-        }
-        if (newDuration < 0.1) {
-          // Prevent collapsing
-          newStart = dragState.originalStart + dragState.originalDuration - 0.1;
-          newDuration = 0.1;
-        }
-
-        // Also update mediaStart for video clips to keep sync
         const layer = layers.find((l) => l.id === dragState.layerId);
-        if (layer && layer.type === "video") {
+        if (layer && (layer.type === "video" || layer.type === "audio")) {
+          const fixedEnd =
+            dragState.originalStart + dragState.originalDuration;
+          const earliestTimelineStart = Math.max(
+            0,
+            dragState.originalStart - dragState.originalMediaStart,
+          );
+          const newStart = Math.min(
+            fixedEnd - 0.1,
+            Math.max(
+              earliestTimelineStart,
+              dragState.originalStart + deltaTime,
+            ),
+          );
           const shift = newStart - dragState.originalStart;
-          const oldMediaStart = layer.mediaStart || 0;
           updateLayer(dragState.layerId, {
             startTime: newStart,
-            duration: newDuration,
-            mediaStart: oldMediaStart + shift,
+            duration: fixedEnd - newStart,
+            mediaStart: Math.max(0, dragState.originalMediaStart + shift),
           });
         } else {
+          let newStart = dragState.originalStart + deltaTime;
+          let newDuration = dragState.originalDuration - deltaTime;
+
+          if (newStart < 0) {
+            newDuration += newStart;
+            newStart = 0;
+          }
+          if (newDuration < 0.1) {
+            newStart =
+              dragState.originalStart + dragState.originalDuration - 0.1;
+            newDuration = 0.1;
+          }
           updateLayer(dragState.layerId, {
             startTime: newStart,
             duration: newDuration,
@@ -190,17 +419,52 @@ export function Timeline() {
         let newDuration = dragState.originalDuration + deltaTime;
         if (newDuration < 0.1) newDuration = 0.1;
 
+        const layer = layers.find((item) => item.id === dragState.layerId);
+        const sourceDuration = Number(layer?.data?.sourceDuration || 0);
+        if (
+          (layer?.type === "video" || layer?.type === "audio") &&
+          sourceDuration > 0
+        ) {
+          newDuration = Math.min(
+            newDuration,
+            Math.max(0.1, sourceDuration - dragState.originalMediaStart),
+          );
+        }
+
         updateLayer(dragState.layerId, { duration: newDuration });
       }
     },
-    [dragState, duration, zoom, updateLayer, layers],
+    [
+      composition.scenes,
+      dragState,
+      duration,
+      updateLayer,
+      layers,
+    ],
   );
 
+  const setSelectedTransition = (
+    side: "before" | "after",
+    type: SceneTransitionType,
+  ) => {
+    if (!selectedLayer || selectedLayer.type !== "video") return;
+    setVideoSceneTransition(selectedLayer.id, side, {
+      type,
+      duration: type === "none" ? 0 : 0.5,
+    });
+  };
+
   const handleMouseUp = useCallback(() => {
-    if (dragState) {
-      setDragState(null);
+    const pendingReorder = pendingSceneReorderRef.current;
+    pendingSceneReorderRef.current = null;
+    if (pendingReorder) {
+      reorderVideoScene(
+        pendingReorder.layerId,
+        pendingReorder.targetIndex,
+      );
     }
-  }, [dragState]);
+    setDragState(null);
+  }, [reorderVideoScene]);
 
   useEffect(() => {
     if (dragState) {
@@ -263,6 +527,28 @@ export function Timeline() {
           </button>
           <button
             onClick={() => {
+              if (!selectedLayerId) return;
+              if (mergeLayer(selectedLayerId)) {
+                toast.success("Videos merged into one sequence");
+              } else {
+                toast.error(
+                  "Select two touching video clips on the same track",
+                );
+              }
+            }}
+            disabled={!canMergeSelected}
+            className={cn(
+              "p-2 rounded-lg transition-all",
+              canMergeSelected
+                ? "hover:bg-gray-200 text-gray-700 hover:text-blue-600"
+                : "text-gray-300 cursor-not-allowed",
+            )}
+            title="Merge With Adjacent Clip"
+          >
+            <Combine className="w-5 h-5" />
+          </button>
+          <button
+            onClick={() => {
               if (selectedLayerId) deleteLayer(selectedLayerId);
             }}
             disabled={!selectedLayerId}
@@ -279,6 +565,44 @@ export function Timeline() {
         </div>
 
         <div className="flex items-center gap-2">
+          {selectedLayer?.type === "video" && (
+            <>
+              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-500">
+                Before
+                <select
+                  value={selectedLayer.data?.transitionBefore?.type || "none"}
+                  onChange={(event) =>
+                    setSelectedTransition(
+                      "before",
+                      event.target.value as SceneTransitionType,
+                    )
+                  }
+                  className="h-7 rounded-md border border-gray-200 bg-white px-2 text-[10px] normal-case text-gray-700"
+                >
+                  <option value="none">None</option>
+                  <option value="fade">Fade</option>
+                  <option value="dissolve">Dissolve</option>
+                </select>
+              </label>
+              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-500">
+                After
+                <select
+                  value={selectedLayer.data?.transitionAfter?.type || "none"}
+                  onChange={(event) =>
+                    setSelectedTransition(
+                      "after",
+                      event.target.value as SceneTransitionType,
+                    )
+                  }
+                  className="h-7 rounded-md border border-gray-200 bg-white px-2 text-[10px] normal-case text-gray-700"
+                >
+                  <option value="none">None</option>
+                  <option value="fade">Fade</option>
+                  <option value="dissolve">Dissolve</option>
+                </select>
+              </label>
+            </>
+          )}
           <ZoomOut className="w-4 h-4 text-gray-400" />
           <Slider
             className="w-24"
@@ -397,6 +721,10 @@ export function Timeline() {
                           selectedLayerId === layer.id
                             ? "ring-2 ring-blue-500/50 z-10 brightness-105"
                             : "hover:ring-1 hover:ring-black/5 opacity-90 hover:opacity-100",
+                          hasMergedNeighbor(layer, trackLayers, "before") &&
+                            "rounded-l-none border-l-0",
+                          hasMergedNeighbor(layer, trackLayers, "after") &&
+                            "rounded-r-none",
                           layer.type === "video"
                             ? "bg-blue-100 border-blue-200 text-blue-800"
                             : layer.type === "audio"
@@ -411,6 +739,12 @@ export function Timeline() {
                         }}
                         onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
                       >
+                        {layer.type === "video" && (
+                          <VideoFrameStrip
+                            url={layer.data?.url}
+                          />
+                        )}
+
                         {/* Trim Handles (Start) */}
                         <div
                           className={cn(

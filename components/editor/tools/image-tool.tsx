@@ -4,11 +4,11 @@ import React, { useRef, useState, useEffect } from "react";
 import { useEditorStore } from "@/lib/store";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { RefreshCcw, Search, ChevronRight, Upload, X } from "lucide-react";
+import { Search, ChevronRight, Upload, X } from "lucide-react";
 import Image from "next/image";
 
 import { AssetService } from "@/lib/asset-service";
-import { addMediaFromUrl } from "@/lib/editor-utils";
+import { addMediaFromUrl, PHOTO_DRAG_MIME_TYPE } from "@/lib/editor-utils";
 import { toast } from "sonner";
 
 type ImageAsset = {
@@ -22,10 +22,9 @@ type ImageAsset = {
 export function ImageTool() {
   const [search, setSearch] = useState("");
   const {
-    recentAssets,
+    photoRecentAssets,
     deleteLayer,
     getLayers,
-    getSelectedLayer,
     removeRecentAsset,
     addRecentAsset,
   } = useEditorStore();
@@ -134,7 +133,7 @@ export function ImageTool() {
           type: "image",
           url: urls[i],
           name: validFiles[i].name,
-        });
+        }, "photo");
       }
 
       if (shouldAutoAddToCanvas) {
@@ -144,7 +143,7 @@ export function ImageTool() {
           type: "image",
           url: urls[0],
           name: validFiles[0].name,
-        });
+        }, "photo");
       }
 
       toast.dismiss(toastId);
@@ -221,7 +220,7 @@ export function ImageTool() {
       .some((value) => value.toLowerCase().includes(normalizedSearch));
   };
 
-  const recentImages = recentAssets
+  const recentImages = photoRecentAssets
     .filter((asset) => asset.type === "image")
     .filter(recentImageMatchesSearch)
     .slice(0, 6);
@@ -250,6 +249,7 @@ export function ImageTool() {
   const addImage = async (
     url: string,
     name: string = "Image",
+    placement?: { left: number; top: number },
   ): Promise<boolean> => {
     try {
       // First-time upload can race with initial canvas registration.
@@ -273,6 +273,8 @@ export function ImageTool() {
           false,
           undefined,
           name,
+          undefined,
+          placement,
         );
         const currentState = useEditorStore.getState();
         const renderedObject = objectId
@@ -310,32 +312,15 @@ export function ImageTool() {
     }
   };
 
-  const replaceSelectedImage = async (
-    e: React.MouseEvent<HTMLButtonElement>,
-    url: string,
-    name: string,
+  const startPhotoDrag = (
+    event: React.DragEvent<HTMLDivElement>,
+    item: { url: string; name: string },
   ) => {
-    e.preventDefault();
-    e.stopPropagation();
-
-    const selectedLayer = getSelectedLayer();
-    if (!selectedLayer || selectedLayer.type !== "image") {
-      toast.info("Select an image on the canvas first.");
-      return;
-    }
-
-    deleteLayer(selectedLayer.id);
-    await addImage(url, name);
-    toast.success("Selected image replaced.");
-  };
-
-  const replaceCanvasImagesFromRecent = async (url: string, name: string) => {
-    const imageLayerIds = getLayers()
-      .filter((layer) => layer.type === "image")
-      .map((layer) => layer.id);
-
-    imageLayerIds.forEach((layerId) => deleteLayer(layerId));
-    await addImage(url, name);
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(
+      PHOTO_DRAG_MIME_TYPE,
+      JSON.stringify({ url: item.url, name: item.name }),
+    );
   };
 
   const removeRecentImageFromCanvas = (
@@ -350,7 +335,7 @@ export function ImageTool() {
       .find((layer) => layer.type === "image" && layer.data?.url === url);
 
     if (!matchingLayer) {
-      removeRecentAsset(url);
+      removeRecentAsset(url, "photo");
       toast.success("Photo removed from recent uploads.");
       return;
     }
@@ -431,7 +416,9 @@ export function ImageTool() {
               {recentImages.map((item) => (
                 <div
                   key={item.id}
-                  onClick={() => replaceCanvasImagesFromRecent(item.url, item.name)}
+                  draggable
+                  onDragStart={(event) => startPhotoDrag(event, item)}
+                  onClick={() => addImage(item.url, item.name)}
                   className="group relative h-24 rounded-lg overflow-hidden cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
                 >
                   <button
@@ -443,19 +430,6 @@ export function ImageTool() {
                   >
                     <X className="h-4 w-4 stroke-[3]" />
                   </button>
-                  {getSelectedLayer()?.type === "image" && (
-                    <button
-                      type="button"
-                      onClick={(e) =>
-                        replaceSelectedImage(e, item.url, item.name)
-                      }
-                      title="Replace selected image"
-                      aria-label="Replace selected image"
-                      className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/40 transition-all hover:bg-[#8b5cf6] group-hover:opacity-100"
-                    >
-                      <RefreshCcw className="h-3.5 w-3.5 stroke-[3]" />
-                    </button>
-                  )}
                   <Image
                     src={item.url}
                     alt={item.name}
@@ -503,22 +477,11 @@ export function ImageTool() {
                 {cat.items.map((item) => (
                   <div
                     key={item.id}
+                    draggable
+                    onDragStart={(event) => startPhotoDrag(event, item)}
                     onClick={() => addImage(item.url, item.name)}
                     className="group relative h-24 rounded-lg overflow-hidden cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
                   >
-                    {getSelectedLayer()?.type === "image" && (
-                      <button
-                        type="button"
-                        onClick={(e) =>
-                          replaceSelectedImage(e, item.url, item.name)
-                        }
-                        title="Replace selected image"
-                        aria-label="Replace selected image"
-                        className="absolute left-1.5 top-1.5 z-20 flex h-7 w-7 items-center justify-center rounded-full bg-black/70 text-white opacity-0 shadow-lg shadow-black/40 transition-all hover:bg-[#8b5cf6] group-hover:opacity-100"
-                      >
-                        <RefreshCcw className="h-3.5 w-3.5 stroke-[3]" />
-                      </button>
-                    )}
                     <Image
                       src={item.url}
                       alt={item.name}

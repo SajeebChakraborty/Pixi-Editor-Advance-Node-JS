@@ -19,7 +19,11 @@ export function VideoTool() {
   const [libraryVideos, setLibraryVideos] = useState<any[]>([]);
   const [deletingVideoId, setDeletingVideoId] = useState<string | null>(null);
 
-  const { canvas, setVideoState, removeRecentAsset } = useEditorStore();
+  const {
+    canvas,
+    setVideoState,
+    removeRecentAsset,
+  } = useEditorStore();
   const [isDragging, setIsDragging] = useState(false);
 
   useEffect(() => {
@@ -203,7 +207,15 @@ export function VideoTool() {
     const targetUrl = url || selectedVideo;
     if (!targetUrl) return;
     const store = useEditorStore.getState();
-    await addMediaFromUrl(targetUrl, store, "video");
+    await addMediaFromUrl(
+      targetUrl,
+      store,
+      "video",
+      false,
+      undefined,
+      libraryVideos.find((video) => video.url === targetUrl)?.name,
+      store.videoFabricCanvas,
+    );
     if (!url) setSelectedVideo(null); // Only clear selection if added from editor, keep library open
   };
 

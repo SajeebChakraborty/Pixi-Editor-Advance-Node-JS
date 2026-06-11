@@ -1,5 +1,11 @@
 import { create } from 'zustand'
 import type { Canvas } from 'fabric'
+import {
+  buildVideoComposition,
+  reorderVideoScenes,
+  synchronizeVideoSceneLayers,
+  type SceneTransition,
+} from './video-composition'
 
 // Canvas presets
 export const CANVAS_PRESETS = {
@@ -8,6 +14,7 @@ export const CANVAS_PRESETS = {
 }
 
 export type CanvasPreset = keyof typeof CANVAS_PRESETS
+export type EditorMode = 'photo' | 'video'
 
 // Types
 export interface Layer {
@@ -24,11 +31,81 @@ export interface Layer {
   track?: number // Track number in the timeline
 }
 
+const MERGE_TIME_EPSILON = 0.01
+
+export const canMergeMediaLayers = (left: Layer, right: Layer) => {
+  const sharesSource = left.objectId || right.objectId
+    ? Boolean(left.objectId && left.objectId === right.objectId)
+    : Boolean(left.data?.url && left.data.url === right.data?.url)
+  const alreadyMerged =
+    Boolean(left.data?.mergeGroupId) &&
+    left.data?.mergeGroupId === right.data?.mergeGroupId
+
+  if (
+    (left.type !== 'video' && left.type !== 'audio') ||
+    right.type !== left.type ||
+    left.track !== right.track ||
+    alreadyMerged
+  ) {
+    return false
+  }
+
+  const leftStart = Number(left.startTime || 0)
+  const leftDuration = Number(left.duration || 0)
+  const rightStart = Number(right.startTime || 0)
+  const leftMediaEnd = Number(left.mediaStart || 0) + leftDuration
+  const rightMediaStart = Number(right.mediaStart || 0)
+
+  const touchesOnTimeline =
+    leftDuration > 0 &&
+    Number(right.duration || 0) > 0 &&
+    Math.abs(leftStart + leftDuration - rightStart) <= MERGE_TIME_EPSILON
+
+  return (
+    touchesOnTimeline &&
+    (!sharesSource ||
+      Math.abs(leftMediaEnd - rightMediaStart) <= MERGE_TIME_EPSILON)
+  )
+}
+
+export const findMergeableMediaPair = (layers: Layer[], layerId: string) => {
+  const selectedLayer = layers.find((layer) => layer.id === layerId)
+  if (!selectedLayer) return null
+
+  const orderedMediaLayers = layers
+    .filter(
+      (layer) =>
+        layer.type === selectedLayer.type &&
+        layer.track === selectedLayer.track,
+    )
+    .sort(
+      (left, right) =>
+        Number(left.startTime || 0) - Number(right.startTime || 0),
+    )
+  const selectedIndex = orderedMediaLayers.findIndex(
+    (layer) => layer.id === layerId,
+  )
+  if (selectedIndex === -1) return null
+
+  const previousLayer = orderedMediaLayers[selectedIndex - 1]
+  const nextLayer = orderedMediaLayers[selectedIndex + 1]
+  if (nextLayer && canMergeMediaLayers(selectedLayer, nextLayer)) {
+    return { left: selectedLayer, right: nextLayer }
+  }
+  if (previousLayer && canMergeMediaLayers(previousLayer, selectedLayer)) {
+    return { left: previousLayer, right: selectedLayer }
+  }
+
+  return null
+}
+
 export interface EditorPage {
   id: string
   name: string
   width: number
   height: number
+  artboardX?: number
+  artboardY?: number
   layers: Layer[]
 }
 
@@ -73,6 +150,11 @@ export interface VideoState {
   playbackRate: number
   startTime: number
   endTime: number
+  filters: {
+    grayscale: number
+    blur: number
+    brightness: number
+  }
 }
 
 export type EditorTool = 'select' | 'hand' | 'text' | 'circle' | 'square' | 'star' | 'pen' | 'arrow'
@@ -85,10 +167,16 @@ export interface PenSettings {
 export interface EditorState {
   // Canvas state
   canvas: CanvasState
+  editorMode: EditorMode
+  photoCanvasState: CanvasState
+  videoCanvasState: CanvasState
+  setEditorMode: (mode: EditorMode) => void
   setCanvas: (canvas: Partial<Omit<CanvasState, 'pages'>>) => void
   setCanvasPreset: (preset: CanvasPreset) => void
   setZoom: (zoom: number) => void
   setFabricCanvas: (fabricCanvas: Canvas | null) => void
+  videoFabricCanvas: Canvas | null
+  setVideoFabricCanvas: (fabricCanvas: Canvas | null) => void
 
   // Tool state
   activeCanvasTool: EditorTool
@@ -103,6 +191,7 @@ export interface EditorState {
   duplicatePage: (id: string) => void
   reorderPage: (id: string, direction: 'up' | 'down') => void
   renamePage: (pageId: string, name: string) => void
+  setPageArtboardPosition: (pageId: string, x: number, y: number) => void
   renameProject: (name: string) => void
 
   // Layer management
@@ -116,6 +205,13 @@ export interface EditorState {
   moveLayer: (draggedId: string, targetId: string, position: 'above' | 'below') => void
   renameLayer: (layerId: string, newName: string) => void
   splitLayer: (layerId: string, time: number) => void
+  mergeLayer: (layerId: string) => boolean
+  reorderVideoScene: (layerId: string, targetIndex: number) => void
+  setVideoSceneTransition: (
+    layerId: string,
+    side: 'before' | 'after',
+    transition: SceneTransition,
+  ) => void
   getLayers: () => Layer[]
   getSelectedLayer: () => Layer | undefined
 
@@ -138,12 +234,17 @@ export interface EditorState {
   recalculateTotalDuration: () => void
 
   // Assets tracking
-  recentAssets: Asset[]
-  addRecentAsset: (asset: Omit<Asset, 'id' | 'timestamp'>) => void
-  removeRecentAsset: (url: string) => void
+  photoRecentAssets: Asset[]
+  videoRecentAssets: Asset[]
+  addRecentAsset: (
+    asset: Omit<Asset, 'id' | 'timestamp'>,
+    universe?: EditorMode,
+  ) => void
+  removeRecentAsset: (url: string, universe?: EditorMode) => void
 }
 
-const firstPageId = `page-${Date.now()}`
+const firstPageId = `photo-page-${Date.now()}`
+const firstVideoPageId = `video-page-${Date.now()}`
 
 const clampLayerToVideoBounds = (
   layer: Omit<Layer, "id"> | Layer,
@@ -261,6 +362,22 @@ const initialCanvasState: CanvasState = {
   historyIndex: -1,
 }
 
+const initialVideoCanvasState: CanvasState = {
+  ...initialCanvasState,
+  name: 'Video Project',
+  pages: [{
+    id: firstVideoPageId,
+    name: 'Scene 1',
+    width: 1280,
+    height: 720,
+    layers: [],
+  }],
+  activePageId: firstVideoPageId,
+  fabricCanvas: null,
+  history: [],
+  historyIndex: -1,
+}
+
 const initialVideoState: VideoState = {
   videoUrl: null,
   currentTime: 0,
@@ -271,10 +388,44 @@ const initialVideoState: VideoState = {
   playbackRate: 1,
   startTime: 0,
   endTime: 0,
+  filters: {
+    grayscale: 0,
+    blur: 0,
+    brightness: 100,
+  },
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
   canvas: initialCanvasState,
+  editorMode: 'photo',
+  photoCanvasState: initialCanvasState,
+  videoCanvasState: initialVideoCanvasState,
+  videoFabricCanvas: null,
+
+  setEditorMode: (mode) =>
+    set((state) => {
+      if (state.editorMode === mode) return state
+
+      const currentSnapshot = {
+        ...state.canvas,
+        fabricCanvas: null,
+      }
+      const nextCanvas =
+        mode === 'photo' ? state.photoCanvasState : state.videoCanvasState
+
+      return {
+        editorMode: mode,
+        canvas: {
+          ...nextCanvas,
+          fabricCanvas: null,
+        },
+        photoCanvasState:
+          state.editorMode === 'photo' ? currentSnapshot : state.photoCanvasState,
+        videoCanvasState:
+          state.editorMode === 'video' ? currentSnapshot : state.videoCanvasState,
+        videoEditorOpen: mode === 'video',
+      }
+    }),
 
   setCanvas: (updates) =>
     set((state) => {
@@ -330,6 +481,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((state) => ({
       canvas: { ...state.canvas, fabricCanvas },
     })),
+
+  setVideoFabricCanvas: (videoFabricCanvas) => set({ videoFabricCanvas }),
 
   activeCanvasTool: 'select',
   setActiveCanvasTool: (tool) => set({ activeCanvasTool: tool }),
@@ -459,6 +612,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }),
 
+  setPageArtboardPosition: (pageId, x, y) =>
+    set((state) => ({
+      canvas: {
+        ...state.canvas,
+        pages: state.canvas.pages.map((page) =>
+          page.id === pageId
+            ? { ...page, artboardX: x, artboardY: y }
+            : page,
+        ),
+      },
+    })),
+
   // Layer management
   addLayer: (layer) => {
     const id = `layer-${Date.now()}-${Math.random()}`
@@ -481,12 +646,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const layerWithTrack = {
         ...normalizedLayer,
         id,
-        track: maxTrack + 1,
+        track: normalizedLayer.track ?? maxTrack + 1,
       }
 
       const newPages = state.canvas.pages.map((p) =>
         p.id === state.canvas.activePageId
-          ? { ...p, layers: [...p.layers, layerWithTrack] }
+          ? {
+              ...p,
+              layers:
+                layerWithTrack.type === 'video'
+                  ? synchronizeVideoSceneLayers([...p.layers, layerWithTrack])
+                  : [...p.layers, layerWithTrack],
+            }
           : p
       )
 
@@ -511,7 +682,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   deleteLayer: (layerId) =>
     set((state) => {
       // 1. Remove from Fabric Canvas
-      const { fabricCanvas } = state.canvas
+      const fabricCanvas =
+        state.editorMode === 'video'
+          ? state.videoFabricCanvas || state.canvas.fabricCanvas
+          : state.canvas.fabricCanvas
       if (fabricCanvas) {
         const activePage = state.canvas.pages.find((p) => p.id === state.canvas.activePageId)
         const layer = activePage?.layers.find((l) => l.id === layerId)
@@ -533,7 +707,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       // 2. Remove from Store
       const newPages = state.canvas.pages.map((p) =>
         p.id === state.canvas.activePageId
-          ? { ...p, layers: p.layers.filter((l) => l.id !== layerId) }
+          ? {
+              ...p,
+              layers: synchronizeVideoSceneLayers(
+                p.layers.filter((l) => l.id !== layerId),
+              ),
+            }
           : p
       )
       
@@ -573,16 +752,30 @@ export const useEditorStore = create<EditorState>((set, get) => ({
             .reduce((max, l) => Math.max(max, (l.startTime || 0) + (l.duration || 0)), 0)
         : 0
 
+      const shouldSynchronizeScenes =
+        currentLayer.type === 'video' &&
+        (updates.startTime !== undefined ||
+          updates.duration !== undefined ||
+          updates.mediaStart !== undefined ||
+          updates.track !== undefined ||
+          updates.visible !== undefined ||
+          updates.data !== undefined)
+
       const newPages = state.canvas.pages.map((p) =>
         p.id === state.canvas.activePageId
-          ? {
-              ...p,
-              layers: p.layers.map((l) => {
+          ? (() => {
+              const updatedLayers = p.layers.map((l) => {
                 if (l.id !== layerId) return l
                 const merged = { ...l, ...updates }
                 return clampLayerToVideoBounds(merged, maxVideoEnd) as Layer
-              }),
-            }
+              })
+              return {
+                ...p,
+                layers: shouldSynchronizeScenes
+                  ? synchronizeVideoSceneLayers(updatedLayers)
+                  : updatedLayers,
+              }
+            })()
           : p
       )
 
@@ -601,10 +794,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         p.id === state.canvas.activePageId
           ? {
               ...p,
-              layers: p.layers.map((l) =>
-                l.id === layerId
-                  ? { ...l, data: { ...(l.data || {}), ...data } }
-                  : l,
+              layers: synchronizeVideoSceneLayers(
+                p.layers.map((l) =>
+                  l.id === layerId
+                    ? { ...l, data: { ...(l.data || {}), ...data } }
+                    : l,
+                ),
               ),
             }
           : p
@@ -800,7 +995,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         name: `${layer.name} (Part 2)`, 
         startTime: time, 
         duration: part2Duration,
-        mediaStart: originalMediaStart + part1Duration 
+        mediaStart: originalMediaStart + part1Duration,
+        data: {
+          ...(layer.data || {}),
+          transitionBefore: { type: 'none', duration: 0 },
+          sceneOrder: Number(layer.data?.sceneOrder || 0) + 0.5,
+        },
+      }
+      part1.data = {
+        ...(part1.data || {}),
+        transitionAfter: { type: 'none', duration: 0 },
       }
 
       const newLayers = [...activePage.layers]
@@ -808,13 +1012,172 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       newLayers.splice(layerIndex + 1, 0, part2)
 
       const newPages = state.canvas.pages.map((p) =>
-        p.id === state.canvas.activePageId ? { ...p, layers: newLayers } : p
+        p.id === state.canvas.activePageId
+          ? { ...p, layers: synchronizeVideoSceneLayers(newLayers) }
+          : p
       )
 
       return {
         canvas: { ...state.canvas, pages: newPages },
       }
     })
+  },
+
+  mergeLayer: (layerId) => {
+    const state = get()
+    const activePage = state.canvas.pages.find(
+      (page) => page.id === state.canvas.activePageId,
+    )
+    if (!activePage) return false
+
+    const mergePair = findMergeableMediaPair(activePage.layers, layerId)
+    if (!mergePair) return false
+    const { left: leftLayer, right: rightLayer } = mergePair
+    const sharesSource = leftLayer.objectId || rightLayer.objectId
+      ? Boolean(
+          leftLayer.objectId &&
+          leftLayer.objectId === rightLayer.objectId,
+        )
+      : Boolean(
+          leftLayer.data?.url &&
+          leftLayer.data.url === rightLayer.data?.url,
+        )
+
+    if (!sharesSource) {
+      const mergeGroupId = `merge-${Date.now()}-${Math.random()}`
+      const mergedName = `${leftLayer.name} + ${rightLayer.name}`
+      const newPages = state.canvas.pages.map((page) =>
+        page.id === state.canvas.activePageId
+          ? {
+              ...page,
+              layers: page.layers.map((layer) =>
+                layer.id === leftLayer.id || layer.id === rightLayer.id
+                  ? {
+                      ...layer,
+                      name: mergedName,
+                      data: {
+                        ...(layer.data || {}),
+                        mergeGroupId,
+                      },
+                    }
+                  : layer,
+              ),
+            }
+          : page,
+      )
+
+      set((currentState) => ({
+        canvas: {
+          ...currentState.canvas,
+          pages: newPages,
+          selectedLayerId: leftLayer.id,
+        },
+      }))
+      setTimeout(() => {
+        const currentState = get()
+        const fabricCanvas =
+          currentState.videoFabricCanvas ||
+          currentState.canvas.fabricCanvas
+        if (fabricCanvas) {
+          get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
+        }
+      }, 0)
+      return true
+    }
+
+    const mergedLayer: Layer = {
+      ...leftLayer,
+      name: leftLayer.name.replace(/\s+\(Part \d+\)$/, ''),
+      duration:
+        Number(leftLayer.duration || 0) + Number(rightLayer.duration || 0),
+    }
+    const newPages = state.canvas.pages.map((page) =>
+      page.id === state.canvas.activePageId
+        ? {
+            ...page,
+            layers: page.layers
+              .filter((layer) => layer.id !== rightLayer.id)
+              .map((layer) =>
+                layer.id === leftLayer.id ? mergedLayer : layer,
+              ),
+          }
+        : page,
+    )
+
+    set((currentState) => ({
+      canvas: {
+        ...currentState.canvas,
+        pages: newPages,
+        selectedLayerId: mergedLayer.id,
+      },
+    }))
+
+    setTimeout(() => {
+      get().recalculateTotalDuration()
+      const currentState = get()
+      const fabricCanvas =
+        currentState.videoFabricCanvas ||
+        currentState.canvas.fabricCanvas
+      if (fabricCanvas) {
+        get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
+      }
+    }, 0)
+
+    return true
+  },
+
+  reorderVideoScene: (layerId, targetIndex) => {
+    let changed = false
+    set((state) => {
+      const pages = state.canvas.pages.map((page) => {
+        if (page.id !== state.canvas.activePageId) return page
+        const nextLayers = reorderVideoScenes(
+          page.layers,
+          layerId,
+          targetIndex,
+        )
+        if (nextLayers === page.layers) return page
+        changed = true
+        return { ...page, layers: nextLayers }
+      })
+      if (!changed) return state
+      return {
+        canvas: {
+          ...state.canvas,
+          pages,
+        },
+      }
+    })
+    if (changed) get().recalculateTotalDuration()
+  },
+
+  setVideoSceneTransition: (layerId, side, transition) => {
+    set((state) => ({
+      canvas: {
+        ...state.canvas,
+        pages: state.canvas.pages.map((page) => {
+          if (page.id !== state.canvas.activePageId) return page
+          const updatedLayers = page.layers.map((layer) =>
+            layer.id === layerId
+              ? {
+                  ...layer,
+                  data: {
+                    ...(layer.data || {}),
+                    [side === 'before'
+                      ? 'transitionBefore'
+                      : 'transitionAfter']: transition,
+                  },
+                }
+              : layer,
+          )
+          return {
+            ...page,
+            layers: synchronizeVideoSceneLayers(updatedLayers),
+          }
+        }),
+      },
+    }))
+    get().recalculateTotalDuration()
   },
 
   getLayers: () => {
@@ -941,7 +1304,25 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   canUndo: () => get().canvas.historyIndex > 0,
   canRedo: () => get().canvas.historyIndex < get().canvas.history.length - 1,
 
-  resetCanvas: () => set({ canvas: initialCanvasState }),
+  resetCanvas: () =>
+    set((state) => {
+      const nextCanvas =
+        state.editorMode === 'photo'
+          ? { ...initialCanvasState, fabricCanvas: state.canvas.fabricCanvas }
+          : { ...initialVideoCanvasState, fabricCanvas: null }
+
+      return {
+        canvas: nextCanvas,
+        photoCanvasState:
+          state.editorMode === 'photo'
+            ? { ...initialCanvasState, fabricCanvas: null }
+            : state.photoCanvasState,
+        videoCanvasState:
+          state.editorMode === 'video'
+            ? initialVideoCanvasState
+            : state.videoCanvasState,
+      }
+    }),
 
   clearAllLayers: () =>
     set((state) => {
@@ -972,8 +1353,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
     }),
 
-  recentAssets: [],
-  addRecentAsset: (asset) => set((state) => {
+  photoRecentAssets: [],
+  videoRecentAssets: [],
+  addRecentAsset: (asset, universe) => set((state) => {
     const uniqueId =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? `asset-${crypto.randomUUID()}`
@@ -983,13 +1365,25 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       id: uniqueId,
       timestamp: Date.now()
     }
-    // Limit to 20 recent assets
-    const newAssets = [newAsset, ...state.recentAssets.filter(a => a.url !== asset.url)].slice(0, 20)
-    return { recentAssets: newAssets }
+    const targetUniverse = universe || state.editorMode
+    const assetKey =
+      targetUniverse === 'video' ? 'videoRecentAssets' : 'photoRecentAssets'
+    const currentAssets = state[assetKey]
+    const newAssets = [
+      newAsset,
+      ...currentAssets.filter((item) => item.url !== asset.url),
+    ].slice(0, 20)
+    return { [assetKey]: newAssets }
   }),
-  removeRecentAsset: (url) => set((state) => ({
-    recentAssets: state.recentAssets.filter((asset) => asset.url !== url),
-  })),
+  removeRecentAsset: (url, universe) =>
+    set((state) => {
+      const targetUniverse = universe || state.editorMode
+      const assetKey =
+        targetUniverse === 'video' ? 'videoRecentAssets' : 'photoRecentAssets'
+      return {
+        [assetKey]: state[assetKey].filter((asset) => asset.url !== url),
+      }
+    }),
 
   recalculateTotalDuration: () => {
     const state = get()
@@ -1005,12 +1399,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return
     }
 
-    let maxEndTime = 0
-    let maxVideoEnd = 0
+    const composition = buildVideoComposition(layers)
+    let maxEndTime = composition.duration
+    const maxVideoEnd = composition.duration
     layers.forEach(layer => {
       const end = (layer.startTime || 0) + (layer.duration || 0)
       if (end > maxEndTime) maxEndTime = end
-      if (layer.type === "video" && end > maxVideoEnd) maxVideoEnd = end
     })
 
     // If video exists, timeline should not exceed video bounds for overlays/text.

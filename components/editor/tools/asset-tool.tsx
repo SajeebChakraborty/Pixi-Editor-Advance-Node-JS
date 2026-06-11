@@ -12,7 +12,7 @@ import { FabricImage } from "fabric";
 import { toast } from "sonner";
 
 export function AssetTool() {
-  const { canvas, addLayer, recentAssets } = useEditorStore();
+  const { canvas, addLayer, photoRecentAssets } = useEditorStore();
   const [assets, setAssets] = useState<Asset[]>([]);
   const [search, setSearch] = useState("");
   const [selectedCategory, setSelectedCategory] = useState<string | "all">(
@@ -107,13 +107,13 @@ export function AssetTool() {
         </Button>
 
         {/* Recent Uploads Section */}
-        {recentAssets.length > 0 && (
+        {photoRecentAssets.length > 0 && (
           <div className="space-y-3">
             <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-1">
               Recent Uploads
             </h3>
             <div className="grid grid-cols-3 gap-2">
-              {recentAssets.slice(0, 6).map((asset) => (
+              {photoRecentAssets.slice(0, 6).map((asset) => (
                 <div
                   key={asset.id}
                   onClick={() => handleAddToCanvas(asset)}

@@ -73,12 +73,28 @@ const ZoomControls = dynamic(
   () => import("@/components/editor/canvas").then((mod) => mod.ZoomControls),
   { ssr: false },
 );
+const VideoPlayerCanvas = dynamic(
+  () =>
+    import("@/components/editor/video-player-canvas").then(
+      (mod) => mod.VideoPlayerCanvas,
+    ),
+  { ssr: false },
+);
+const VideoPlayerProperties = dynamic(
+  () =>
+    import("@/components/editor/video-player-properties").then(
+      (mod) => mod.VideoPlayerProperties,
+    ),
+  { ssr: false },
+);
 
 import { useEditorStore } from "@/lib/store";
 import { addMediaFromUrl } from "@/lib/editor-utils";
 
 function EditorContent() {
   const searchParams = useSearchParams();
+  const [isDesktop, setIsDesktop] = useState<boolean | null>(null);
+  const [isEditorModeRestored, setIsEditorModeRestored] = useState(false);
   
   // Robust param extraction for malformed URLs (e.g. hasPendingImg=1?url=...)
   const getParam = (key: string) => {
@@ -124,28 +140,64 @@ function EditorContent() {
 
   const store = useEditorStore();
 
-  // Initialize tool selection based on URL and inferred type
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(min-width: 768px)");
+    const syncViewport = () => setIsDesktop(mediaQuery.matches);
+
+    syncViewport();
+    mediaQuery.addEventListener("change", syncViewport);
+    return () => mediaQuery.removeEventListener("change", syncViewport);
+  }, []);
+
+  // Restore the last editor universe unless the URL explicitly requests one.
   useEffect(() => {
     const lowerUrl = (initialUrl || "").toLowerCase();
-    const isVid = initialType === "video" || lowerUrl.match(/\.(mp4|webm|mov)$/);
-    const isImg = initialType === "image" || lowerUrl.match(/\.(png|jpg|jpeg|gif|webp)$/);
+    const isVid =
+      initialType === "video" ||
+      hasPendingVideo ||
+      Boolean(lowerUrl.match(/\.(mp4|webm|mov)$/));
+    const isImg =
+      initialType === "image" ||
+      hasPendingImg ||
+      Boolean(lowerUrl.match(/\.(png|jpg|jpeg|gif|webp)$/));
+    const savedMode = window.localStorage.getItem("pixigen-editor-mode");
 
     if (isVid) {
       setActiveTool("video");
+      useEditorStore.getState().setEditorMode("video");
       setIsLeftPanelOpen(true);
     } else if (isImg || initialUrl) {
       setActiveTool("photos");
+      useEditorStore.getState().setEditorMode("photo");
+      setIsLeftPanelOpen(true);
+    } else if (savedMode === "video") {
+      setActiveTool("video");
+      useEditorStore.getState().setEditorMode("video");
       setIsLeftPanelOpen(true);
     }
-  }, [initialType, initialUrl]);
+
+    setIsEditorModeRestored(true);
+  }, [
+    hasPendingImg,
+    hasPendingVideo,
+    initialType,
+    initialUrl,
+  ]);
+
+  useEffect(() => {
+    if (!isEditorModeRestored) return;
+    window.localStorage.setItem("pixigen-editor-mode", store.editorMode);
+  }, [isEditorModeRestored, store.editorMode]);
 
   const fabricCanvas = store.canvas.fabricCanvas;
+  const initialEditorCanvas =
+    store.editorMode === "video" ? store.videoFabricCanvas : fabricCanvas;
   const [hasLoadedInitial, setHasLoadedInitial] = useState(false);
 
   // Handle initial background/asset from URL
   useEffect(() => {
     // Only run if we have a URL, a canvas is ready, and we haven't loaded it yet
-    if (initialUrl && fabricCanvas && !hasLoadedInitial) {
+    if (initialUrl && initialEditorCanvas && !hasLoadedInitial) {
       setHasLoadedInitial(true);
       
       const processInitial = async () => {
@@ -170,21 +222,31 @@ function EditorContent() {
         await addMediaFromUrl(
           initialUrl!,
           freshState,
-          initialType || inferredType as any
+          initialType || inferredType as any,
+          false,
+          undefined,
+          undefined,
+          freshState.editorMode === "video"
+            ? freshState.videoFabricCanvas
+            : freshState.canvas.fabricCanvas,
         );
 
         // 4. Force Deselect to show Canvas Settings on the right by default
         const resultState = useEditorStore.getState();
-        if (resultState.canvas.fabricCanvas) {
-          resultState.canvas.fabricCanvas.discardActiveObject();
-          resultState.canvas.fabricCanvas.requestRenderAll();
+        const resultCanvas =
+          resultState.editorMode === "video"
+            ? resultState.videoFabricCanvas
+            : resultState.canvas.fabricCanvas;
+        if (resultCanvas) {
+          resultCanvas.discardActiveObject();
+          resultCanvas.requestRenderAll();
         }
         resultState.selectLayer(null);
       };
       
       processInitial();
     }
-  }, [initialUrl, fabricCanvas, hasLoadedInitial, initialType]);
+  }, [initialUrl, initialEditorCanvas, hasLoadedInitial, initialType]);
 
   // Handle image/video sent via postMessage from the frontend app (opener window)
   // This is used when the generated media is a base64 data URI that's too large for a URL param
@@ -213,16 +275,34 @@ function EditorContent() {
       const dataUrl = event.data.dataUrl as string;
       const mediaType = msgType === 'PIXIZEN_VIDEO' ? 'video' : 'image';
       
-      if (mediaType === 'video') setActiveTool("video");
+      if (mediaType === 'video') {
+        setActiveTool("video");
+        useEditorStore.getState().setEditorMode("video");
+      } else {
+        setActiveTool("photos");
+        useEditorStore.getState().setEditorMode("photo");
+      }
 
       const waitAndAdd = async () => {
         let attempts = 0;
         const interval = setInterval(async () => {
           attempts++;
           const currentState = useEditorStore.getState();
-          if (currentState.canvas.fabricCanvas) {
+          const targetCanvas =
+            mediaType === "video"
+              ? currentState.videoFabricCanvas
+              : currentState.canvas.fabricCanvas;
+          if (targetCanvas) {
             clearInterval(interval);
-            await addMediaFromUrl(dataUrl, currentState, mediaType);
+            await addMediaFromUrl(
+              dataUrl,
+              currentState,
+              mediaType,
+              false,
+              undefined,
+              undefined,
+              targetCanvas,
+            );
           }
           if (attempts > 20) clearInterval(interval);
         }, 500);
@@ -252,8 +332,20 @@ function EditorContent() {
         (pastedText.startsWith("http://") || pastedText.startsWith("https://"))
       ) {
         const currentState = useEditorStore.getState();
-        if (currentState.canvas.fabricCanvas) {
-          await addMediaFromUrl(pastedText, currentState);
+        const targetCanvas =
+          currentState.editorMode === "video"
+            ? currentState.videoFabricCanvas
+            : currentState.canvas.fabricCanvas;
+        if (targetCanvas) {
+          await addMediaFromUrl(
+            pastedText,
+            currentState,
+            undefined,
+            false,
+            undefined,
+            undefined,
+            targetCanvas,
+          );
         }
       }
     };
@@ -286,20 +378,23 @@ function EditorContent() {
     { id: "elements", icon: LayoutGrid, label: "Elements" },
   ];
 
-  const showTimeline =
-    store.canvas.pages.some((p) =>
-      p.layers.some((l) => l.type === "video" || l.type === "audio"),
-    ) ||
-    activeTool === "video" ||
-    activeTool === "audio" ||
-    store.videoEditorOpen;
+  const showTimeline = store.editorMode === "video";
+
+  if (isDesktop === null || !isEditorModeRestored) {
+    return (
+      <div className="h-screen w-full flex items-center justify-center bg-black text-white">
+        <div className="w-12 h-12 border-4 border-[#8b5cf6] border-t-transparent rounded-full animate-spin" />
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen flex flex-col bg-[#ffffff] text-white overflow-hidden font-sans">
       <TopBar />
 
       {/* ─── DESKTOP LAYOUT (md and up) ─── */}
-      <div className="hidden md:flex flex-1 overflow-hidden bg-[#000000]">
+      {isDesktop ? (
+      <div className="flex flex-1 overflow-hidden bg-[#000000]">
         {/* Left Side: combined Rail and Sidebar */}
         <div
           className={cn(
@@ -321,6 +416,11 @@ function EditorContent() {
                     setActiveTool(item.id as any);
                     setIsLeftPanelOpen(true);
                   } else {
+                    if (item.id === "video") {
+                      store.setEditorMode("video");
+                    } else if (item.id === "photos") {
+                      store.setEditorMode("photo");
+                    }
                     if (activeTool === item.id) {
                       setIsLeftPanelOpen(!isLeftPanelOpen);
                     } else {
@@ -370,8 +470,14 @@ function EditorContent() {
               id="canvas-panel"
               className="relative flex flex-col bg-transparent"
             >
-              <Canvas />
-              <ZoomControls />
+              {store.editorMode === "video" ? (
+                <VideoPlayerCanvas />
+              ) : (
+                <>
+                  <Canvas />
+                  <ZoomControls />
+                </>
+              )}
             </ResizablePanel>
 
             {showTimeline && (
@@ -393,16 +499,20 @@ function EditorContent() {
         {/* Right Sidebar */}
         <aside className="w-[320px] flex-shrink-0 bg-[#000000] flex flex-col overflow-hidden border-l border-white/10">
           <div className="flex-1 overflow-y-auto no-scrollbar px-5 pt-5 pb-12">
-            <PropertiesPanel />
+            {store.editorMode === "video" ? (
+              <VideoPlayerProperties />
+            ) : (
+              <PropertiesPanel />
+            )}
           </div>
         </aside>
       </div>
 
-      {/* ─── MOBILE LAYOUT (below md) ─── */}
-      <div className="flex md:hidden flex-1 flex-col overflow-hidden bg-[#0a0a0a] relative">
+      ) : (
+      <div className="flex flex-1 flex-col overflow-hidden bg-[#0a0a0a] relative">
         {/* Canvas Area */}
         <div className="flex-1 relative overflow-hidden bg-[#f1f3f6]">
-          <Canvas />
+          {store.editorMode === "video" ? <VideoPlayerCanvas /> : <Canvas />}
         </div>
 
         {/* Timeline strip (if needed) */}
@@ -461,6 +571,11 @@ function EditorContent() {
                 <button
                   key={item.id}
                   onClick={() => {
+                    if (item.id === "video") {
+                      store.setEditorMode("video");
+                    } else if (item.id === "photos") {
+                      store.setEditorMode("photo");
+                    }
                     if (activeTool === item.id && mobileSheetOpen) {
                       setMobileSheetOpen(false);
                     } else {
@@ -520,6 +635,7 @@ function EditorContent() {
           </button>
         </div>
       </div>
+      )}
     </div>
   );
 }

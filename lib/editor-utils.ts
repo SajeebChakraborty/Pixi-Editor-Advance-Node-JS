@@ -3,6 +3,9 @@ import { useEditorStore } from "./store";
 import { toast } from "sonner";
 import { resolveVideoPlaybackUrl } from "./video-playback-url";
 import { attachVideoOverlay } from "./video-overlay";
+import { buildVideoComposition } from "./video-composition";
+
+export const PHOTO_DRAG_MIME_TYPE = "application/x-pixi-photo";
 
 export const addMediaFromUrl = async (
   url: string,
@@ -11,7 +14,8 @@ export const addMediaFromUrl = async (
   silent = false,
   forceObjectId?: string,
   mediaName?: string,
-  targetFabricCanvas?: fabric.Canvas | null
+  targetFabricCanvas?: fabric.Canvas | null,
+  placement?: { left: number; top: number },
 ): Promise<string | null> => {
   const { canvas, addLayer, setVideoState, addRecentAsset, videoState, setCanvas } = store;
   const { width: storeWidth, height: storeHeight } = canvas || { width: 1280, height: 720 };
@@ -237,13 +241,25 @@ export const addMediaFromUrl = async (
     const vHeight = videoEl.videoHeight || 720;
 
     let targetCanvas = fabricCanvas;
-    if (!silent) {
-      const currentStore = useEditorStore.getState();
-      currentStore
-        .getLayers()
-        .filter((layer: any) => layer.type === "video")
-        .forEach((layer: any) => currentStore.deleteLayer(layer.id));
+    const currentStore = useEditorStore.getState();
+    const existingVideoLayers = currentStore
+      .getLayers()
+      .filter((layer: any) => layer.type === "video");
+    const isFirstVideo = existingVideoLayers.length === 0;
+    const appendStart = existingVideoLayers.reduce(
+      (max: number, layer: any) =>
+        Math.max(
+          max,
+          Number(layer.startTime || 0) + Number(layer.duration || 0),
+        ),
+      0,
+    );
+    const videoTrack =
+      existingVideoLayers.length > 0
+        ? existingVideoLayers[0]?.track ?? 0
+        : undefined;
 
+    if (!silent && isFirstVideo) {
       currentStore.setCanvas({ width: vWidth, height: vHeight });
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
@@ -259,16 +275,17 @@ export const addMediaFromUrl = async (
       }
     }
 
-    const targetWidth = silent ? baseWidth : vWidth;
-    const targetHeight = silent ? baseHeight : vHeight;
-    const displayScale = silent
-      ? Math.min(
-          1,
-          (targetWidth * 0.8) / vWidth,
-          (targetHeight * 0.8) / vHeight,
-          1280 / Math.max(vWidth, vHeight),
-        ) || 1
-      : 1;
+    const projectCanvas = useEditorStore.getState().canvas;
+    const targetWidth = Math.max(
+      1,
+      isFirstVideo && !silent ? vWidth : projectCanvas.width || baseWidth,
+    );
+    const targetHeight = Math.max(
+      1,
+      isFirstVideo && !silent ? vHeight : projectCanvas.height || baseHeight,
+    );
+    const displayScale =
+      Math.min(targetWidth / vWidth, targetHeight / vHeight) || 1;
     // The browser composites the real video element. Fabric only owns this
     // transparent object for selection and transforms.
     const transparentPixel = document.createElement("canvas");
@@ -276,8 +293,8 @@ export const addMediaFromUrl = async (
     transparentPixel.height = 1;
 
     const fabricVideo = new fabric.FabricImage(transparentPixel, {
-      left: silent ? (targetWidth - vWidth * displayScale) / 2 : 0,
-      top: silent ? (targetHeight - vHeight * displayScale) / 2 : 0,
+      left: (targetWidth - vWidth * displayScale) / 2,
+      top: (targetHeight - vHeight * displayScale) / 2,
       width: vWidth,
       height: vHeight,
       scaleX: displayScale,
@@ -297,7 +314,9 @@ export const addMediaFromUrl = async (
     };
 
     targetCanvas.add(fabricVideo);
-    attachVideoOverlay(targetCanvas, fabricVideo as any, videoEl);
+    if (targetCanvas !== currentStore.videoFabricCanvas) {
+      attachVideoOverlay(targetCanvas, fabricVideo as any, videoEl);
+    }
     targetCanvas.setActiveObject(fabricVideo);
     targetCanvas.bringObjectToFront(fabricVideo);
     targetCanvas.requestRenderAll();
@@ -314,23 +333,32 @@ export const addMediaFromUrl = async (
         name: videoDisplayName,
         locked: false,
         visible: true,
-        startTime: 0,
+        startTime: appendStart,
         duration: videoDuration,
         objectId: objectId,
+        track: videoTrack,
         data: {
           url,
           name: videoDisplayName,
           sourceDuration: videoDuration,
           width: vWidth,
           height: vHeight,
+          sceneOrder: existingVideoLayers.length,
+          transitionBefore: { type: "none", duration: 0 },
+          transitionAfter: { type: "none", duration: 0 },
         },
       });
+      const composition = buildVideoComposition(
+        useEditorStore.getState().getLayers(),
+      );
       // Show the newly appended clip immediately.
       setVideoState({
-        currentTime: 0,
+        currentTime:
+          composition.scenes.find((scene) => scene.layer.objectId === objectId)
+            ?.timelineStart || appendStart,
         startTime: 0,
-        endTime: videoDuration,
-        duration: videoDuration,
+        endTime: composition.duration,
+        duration: composition.duration,
         isPlaying: false,
         videoUrl: url,
       });
@@ -338,7 +366,11 @@ export const addMediaFromUrl = async (
       fabricVideo.setCoords();
       targetCanvas.setActiveObject(fabricVideo);
       targetCanvas.requestRenderAll();
-      toast.success("Video added to canvas!");
+      toast.success(
+        isFirstVideo
+          ? "Video added to canvas!"
+          : "Video appended to the timeline!",
+      );
     }
     return objectId;
   } else {
@@ -396,18 +428,30 @@ export const addMediaFromUrl = async (
       const targetHeight = shouldAutoResizeCanvasToImage ? imgHeight : baseHeight;
       const scale = shouldAutoResizeCanvasToImage
         ? 1
-        : hasVideoLayer
+        : hasVisualLayer
           ? Math.min(
               1,
-              (targetWidth * 0.4) / imgWidth,
-              (targetHeight * 0.4) / imgHeight,
+              (targetWidth * 0.45) / imgWidth,
+              (targetHeight * 0.45) / imgHeight,
             ) || 1
           : Math.max(targetWidth / imgWidth, targetHeight / imgHeight) || 1;
       const objectId = forceObjectId || `img_${Date.now()}`;
+      const renderedWidth = imgWidth * scale;
+      const renderedHeight = imgHeight * scale;
+      const imageLeft = placement
+        ? placement.left - renderedWidth / 2
+        : shouldAutoResizeCanvasToImage
+          ? 0
+          : (targetWidth - renderedWidth) / 2;
+      const imageTop = placement
+        ? placement.top - renderedHeight / 2
+        : shouldAutoResizeCanvasToImage
+          ? 0
+          : (targetHeight - renderedHeight) / 2;
 
       const fabricImg = new fabric.FabricImage(loadedEl, {
-        left: shouldAutoResizeCanvasToImage ? 0 : (targetWidth - imgWidth * scale) / 2,
-        top: shouldAutoResizeCanvasToImage ? 0 : (targetHeight - imgHeight * scale) / 2,
+        left: imageLeft,
+        top: imageTop,
         scaleX: scale,
         scaleY: scale,
         name: objectId,

@@ -17,7 +17,7 @@ interface VideoEditorProps {
 }
 
 export function VideoEditorComplete({ videoUrl }: VideoEditorProps) {
-  const { setVideoEditorOpen, setVideoState } = useEditorStore();
+  const { setVideoEditorOpen, setVideoState, setEditorMode } = useEditorStore();
   const videoRef = useRef<HTMLVideoElement>(null);
   const resolvedSrc = useMemo(
     () => resolveVideoPlaybackUrl(videoUrl),
@@ -204,6 +204,7 @@ export function VideoEditorComplete({ videoUrl }: VideoEditorProps) {
         <Button
           onClick={() => {
             setVideoState({ videoUrl, isPlaying: false });
+            setEditorMode("video");
             setVideoEditorOpen(true);
           }}
           className="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold"

@@ -15,6 +15,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { useEditorStore } from "@/lib/store";
+import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 type MusicItem = {
@@ -26,12 +27,13 @@ export function AudioTool() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const previewAudioRef = useRef<HTMLAudioElement | null>(null);
   const [previewingUrl, setPreviewingUrl] = useState<string | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
 
   const {
     addLayer,
     deleteLayer,
     getLayers,
-    recentAssets,
+    videoRecentAssets,
     addRecentAsset,
     updateLayerData,
     videoState,
@@ -109,18 +111,11 @@ export function AudioTool() {
     setVideoState({
       currentTime: 0,
       isPlaying: false,
-      isMuted: true,
     });
     toast.success(`Background music changed to ${item.title}`);
   };
 
-  const handleUploadAudio = async (
-    event: React.ChangeEvent<HTMLInputElement>,
-  ) => {
-    const file = event.target.files?.[0];
-    event.target.value = "";
-    if (!file) return;
-
+  const processAudioFile = async (file: File) => {
     const isAudio =
       file.type.startsWith("audio/") ||
       /\.(mp3|mpeg|mpga|wav|m4a|aac|ogg|flac)$/i.test(file.name);
@@ -130,8 +125,32 @@ export function AudioTool() {
     }
 
     const url = URL.createObjectURL(file);
-    addRecentAsset({ url, name: file.name, type: "audio" });
+    addRecentAsset({ url, name: file.name, type: "audio" }, "video");
     await replaceBackgroundMusic({ title: file.name, url });
+  };
+
+  const handleUploadAudio = async (
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (file) await processAudioFile(file);
+  };
+
+  const handleAudioDrop = (event: React.DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setIsDragging(false);
+    const file = Array.from(event.dataTransfer.files).find(
+      (candidate) =>
+        candidate.type.startsWith("audio/") ||
+        /\.(mp3|mpeg|mpga|wav|m4a|aac|ogg|flac)$/i.test(candidate.name),
+    );
+    if (!file) {
+      toast.error("Drop a valid audio file.");
+      return;
+    }
+    void processAudioFile(file);
   };
 
   const togglePreview = (url: string) => {
@@ -177,7 +196,7 @@ export function AudioTool() {
     });
   };
 
-  const uploadedAudio = recentAssets.filter((asset) => asset.type === "audio");
+  const uploadedAudio = videoRecentAssets.filter((asset) => asset.type === "audio");
 
   return (
     <div className="flex h-full flex-col bg-[#161616] text-white">
@@ -201,7 +220,28 @@ export function AudioTool() {
 
         <Button
           onClick={() => fileInputRef.current?.click()}
-          className="h-20 w-full flex-col gap-2 border-2 border-dashed border-white/15 bg-white/5 text-white hover:border-violet-400/70 hover:bg-violet-500/10"
+          onDragEnter={(event) => {
+            event.preventDefault();
+            setIsDragging(true);
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "copy";
+            setIsDragging(true);
+          }}
+          onDragLeave={(event) => {
+            event.preventDefault();
+            if (!event.currentTarget.contains(event.relatedTarget as Node)) {
+              setIsDragging(false);
+            }
+          }}
+          onDrop={handleAudioDrop}
+          className={cn(
+            "h-20 w-full flex-col gap-2 border-2 border-dashed text-white",
+            isDragging
+              ? "border-violet-400 bg-violet-500/20"
+              : "border-white/15 bg-white/5 hover:border-violet-400/70 hover:bg-violet-500/10",
+          )}
         >
           <Upload className="h-5 w-5" />
           <span className="text-[10px] font-black uppercase tracking-widest">

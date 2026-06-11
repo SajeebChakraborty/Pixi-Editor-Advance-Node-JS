@@ -14,7 +14,7 @@ import { toast } from "sonner";
 
 export function ImageTool() {
   const [search, setSearch] = useState("");
-  const { recentAssets, deleteLayer, getLayers } = useEditorStore();
+  const { photoRecentAssets, deleteLayer, getLayers } = useEditorStore();
   const [categories, setCategories] = useState<
     { name: string; items: any[] }[]
   >([]);
@@ -211,13 +211,13 @@ export function ImageTool() {
 
       <div className="flex-1 overflow-y-auto px-5 pb-8 space-y-8 no-scrollbar">
         {/* Recent Uploads Section */}
-        {recentAssets.filter((a) => a.type === "image").length > 0 && (
+        {photoRecentAssets.filter((a) => a.type === "image").length > 0 && (
           <div className="space-y-3">
             <h3 className="text-[10px] font-bold text-gray-400 uppercase tracking-widest pl-1">
               Recent Uploads
             </h3>
             <div className="grid grid-cols-2 gap-3">
-              {recentAssets
+              {photoRecentAssets
                 .filter((a) => a.type === "image")
                 .slice(0, 4)
                 .map((item) => (

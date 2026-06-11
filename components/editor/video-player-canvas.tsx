@@ -1,61 +1,49 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { useEditorStore } from "@/lib/store";
 import {
   Play,
   Pause,
-  Volume2,
-  VolumeX,
-  Scissors,
-  Maximize,
   Download,
-  Plus,
-  Type,
-  ImageIcon,
-  Music,
-  Trash2,
-  Sparkles,
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
-import { Canvas as FabricCanvas, FabricImage, IText } from "fabric";
+import { Canvas as FabricCanvas } from "fabric";
 import {
   resolveVideoPlaybackUrl,
   videoNeedsCrossOrigin,
 } from "@/lib/video-playback-url";
+import {
+  buildVideoComposition,
+  resolveCompositionFrame,
+} from "@/lib/video-composition";
 
 export function VideoPlayerCanvas() {
   const {
     videoState,
     setVideoState,
     setVideoEditorOpen,
-    addLayer,
-    deleteLayer,
+    setEditorMode,
     getLayers,
-    setFabricCanvas,
-    splitLayer,
+    setVideoFabricCanvas,
     canvas: globalCanvas,
   } = useEditorStore();
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const videoARef = useRef<HTMLVideoElement>(null);
+  const videoBRef = useRef<HTMLVideoElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
   const fabricRef = useRef<FabricCanvas | null>(null);
+  const loadedVideoSourcesRef = useRef<(string | null)[]>([null, null]);
+  const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
   const videoResolutionRef = useRef({ width: 1920, height: 1080 });
   const [isExported, setIsExported] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
   const [videoResolution, setVideoResolution] = useState({
     width: 1920,
     height: 1080,
-  });
-
-  // Effects State
-  const [filters, setFilters] = useState({
-    grayscale: 0,
-    blur: 0,
-    brightness: 100,
   });
 
   const {
@@ -66,9 +54,16 @@ export function VideoPlayerCanvas() {
     isMuted,
     volume,
     playbackRate,
-    startTime,
-    endTime,
+    filters,
   } = videoState;
+  const composition = useMemo(
+    () => buildVideoComposition(getLayers()),
+    [getLayers, globalCanvas.pages, globalCanvas.activePageId],
+  );
+  const audioLayers = useMemo(
+    () => getLayers().filter((layer) => layer.type === "audio"),
+    [getLayers, globalCanvas.pages, globalCanvas.activePageId],
+  );
 
   const syncCanvasSize = useCallback(() => {
     const canvas = fabricRef.current;
@@ -98,46 +93,34 @@ export function VideoPlayerCanvas() {
     });
 
     fabricRef.current = canvas;
-    setFabricCanvas(canvas);
+    setVideoFabricCanvas(canvas);
     window.addEventListener("resize", syncCanvasSize);
     setTimeout(syncCanvasSize, 100);
 
     return () => {
+      if (useEditorStore.getState().videoFabricCanvas === canvas) {
+        setVideoFabricCanvas(null);
+      }
       canvas.dispose();
-      setFabricCanvas(null);
+      fabricRef.current = null;
       window.removeEventListener("resize", syncCanvasSize);
     };
-  }, [setFabricCanvas, syncCanvasSize]);
+  }, [setVideoFabricCanvas, syncCanvasSize]);
 
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    if (!videoUrl) {
-      video.src = "";
-      video.load();
-      return;
-    }
-    const resolved = resolveVideoPlaybackUrl(videoUrl);
-    if (videoNeedsCrossOrigin(resolved)) {
-      video.crossOrigin = "anonymous";
-    } else {
-      video.removeAttribute("crossorigin");
-    }
-    video.preload = "auto";
-    video.playsInline = true;
-    video.src = resolved;
-    video.load();
+    const width = Math.max(1, Number(globalCanvas.width || 1920));
+    const height = Math.max(1, Number(globalCanvas.height || 1080));
+    videoResolutionRef.current = { width, height };
+    setVideoResolution({ width, height });
+    requestAnimationFrame(syncCanvasSize);
+  }, [globalCanvas.height, globalCanvas.width, syncCanvasSize]);
 
+  useEffect(() => {
     const onLoadedMetadata = () => {
-      const width = video.videoWidth;
-      const height = video.videoHeight;
-      if (width > 0 && height > 0) {
-        videoResolutionRef.current = { width, height };
-        setVideoResolution({ width, height });
-        requestAnimationFrame(syncCanvasSize);
-      }
+      requestAnimationFrame(syncCanvasSize);
     };
-    const onError = () => {
+    const onError = (event: Event) => {
+      const video = event.currentTarget as HTMLVideoElement;
       const code = video.error?.code;
       const msg =
         code === 4
@@ -147,330 +130,347 @@ export function VideoPlayerCanvas() {
             : "Could not load video (check URL or network).";
       toast.error(msg);
     };
-    video.addEventListener("loadedmetadata", onLoadedMetadata);
-    video.addEventListener("error", onError);
+    const videos = [videoARef.current, videoBRef.current].filter(
+      (video): video is HTMLVideoElement => Boolean(video),
+    );
+    videos.forEach((video) => {
+      video.addEventListener("loadedmetadata", onLoadedMetadata);
+      video.addEventListener("error", onError);
+    });
     return () => {
-      video.removeEventListener("loadedmetadata", onLoadedMetadata);
-      video.removeEventListener("error", onError);
+      videos.forEach((video) => {
+        video.removeEventListener("loadedmetadata", onLoadedMetadata);
+        video.removeEventListener("error", onError);
+      });
     };
-  }, [syncCanvasSize, videoUrl]);
+  }, [syncCanvasSize]);
 
   // Sync Video with Timeline (Master Clock)
   useEffect(() => {
-    let animationFrameId: number;
+    if (!isPlaying) return;
+    let animationFrameId = 0;
     let lastTime = performance.now();
 
     const loop = () => {
       const now = performance.now();
-      const dt = (now - lastTime) / 1000;
+      const dt = Math.max(0, (now - lastTime) / 1000);
       lastTime = now;
+      const latestState = useEditorStore.getState().videoState;
+      const playbackEnd = Math.min(
+        composition.duration,
+        latestState.endTime > 0
+          ? latestState.endTime
+          : composition.duration,
+      );
+      const nextTime =
+        latestState.currentTime + dt * latestState.playbackRate;
 
-      if (isPlaying) {
+      if (nextTime >= playbackEnd) {
         setVideoState({
-          currentTime: Math.min(duration, currentTime + dt * playbackRate),
+          currentTime: playbackEnd,
+          isPlaying: false,
         });
-
-        // Loop Logic
-        if (currentTime >= endTime) {
-          setVideoState({ currentTime: startTime });
-        }
+        return;
       }
 
+      setVideoState({ currentTime: nextTime });
       animationFrameId = requestAnimationFrame(loop);
     };
 
-    if (isPlaying) {
-      loop();
-    }
+    animationFrameId = requestAnimationFrame(loop);
 
     return () => {
       cancelAnimationFrame(animationFrameId);
     };
-  }, [
-    isPlaying,
-    currentTime,
-    duration,
-    startTime,
-    endTime,
-    playbackRate,
-    setVideoState,
-  ]);
+  }, [composition.duration, isPlaying, setVideoState]);
 
   // Sync Video Element to Timeline Time
   useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !videoUrl) return;
+    const videos = [videoARef.current, videoBRef.current];
+    const frames = resolveCompositionFrame(composition, currentTime);
 
-    const layers = getLayers();
-    const videoLayers = layers.filter((l) => l.type === "video");
-
-    // Find active video layer - include tolerance for exact boundary
-    const activeLayer = videoLayers.find((l) => {
-      const layerStart = l.startTime || 0;
-      const layerEnd = layerStart + (l.duration || 0);
-      const tolerance = 0.1;
-      return currentTime >= layerStart - tolerance && currentTime < layerEnd + tolerance;
-    });
-    const retainedLayer = activeLayer
-      ? null
-      : videoLayers
-          .filter(
-            (layer) =>
-              currentTime >=
-              Number(layer.startTime || 0) + Number(layer.duration || 0),
-          )
-          .sort(
-            (left, right) =>
-              Number(right.startTime || 0) - Number(left.startTime || 0),
-          )[0];
-    const visibleLayer = activeLayer || retainedLayer;
-
-    if (visibleLayer) {
-      // Calculate target video time based on offset and layer start
-      const offset = activeLayer
-        ? currentTime - (activeLayer.startTime || 0)
-        : Math.max(0, Number(visibleLayer.duration || 0) - 0.001);
-      const targetTime = (visibleLayer.mediaStart || 0) + offset;
-
-      // Sync video state
-      if (Math.abs(video.currentTime - targetTime) > 0.2) {
-        video.currentTime = targetTime;
+    videos.forEach((video, index) => {
+      if (!video) return;
+      const frame = frames[index];
+      if (!frame) {
+        video.style.opacity = "0";
+        if (!video.paused) video.pause();
+        return;
       }
 
-      if (activeLayer && video.paused && isPlaying) {
-        video.play().catch(() => { });
-      } else if (!activeLayer && !video.paused) {
+      const sourceUrl = frame.scene.layer.data?.url || videoUrl;
+      if (!sourceUrl) return;
+      const resolvedSource = resolveVideoPlaybackUrl(sourceUrl);
+      const syncPlayback = () => {
+        if (loadedVideoSourcesRef.current[index] !== resolvedSource) return;
+        if (video.readyState < 1) return;
+        if (Math.abs(video.currentTime - frame.sourceTime) > 0.12) {
+          video.currentTime = frame.sourceTime;
+        }
+
+        if (isPlaying && video.paused) {
+          video.play().catch(() => { });
+        } else if (!isPlaying && !video.paused) {
+          video.pause();
+        }
+      };
+
+      if (loadedVideoSourcesRef.current[index] !== resolvedSource) {
         video.pause();
+        if (videoNeedsCrossOrigin(resolvedSource)) {
+          video.crossOrigin = "anonymous";
+        } else {
+          video.removeAttribute("crossorigin");
+        }
+        loadedVideoSourcesRef.current[index] = resolvedSource;
+        video.preload = "auto";
+        video.playsInline = true;
+        video.src = resolvedSource;
+        video.load();
+        video.addEventListener("loadedmetadata", syncPlayback, { once: true });
+      } else {
+        syncPlayback();
       }
-      video.style.opacity = "1";
+
+      video.style.opacity = String(frame.opacity);
       video.style.display = "block";
-    } else {
-      // No video at this time (gap) - but keep display block for potential visibility
-      video.style.opacity = "0";
-      if (!video.paused) video.pause();
-    }
+    });
 
     // Ensure fabric canvas is rendered when video visibility changes
     if (fabricRef.current) {
+      getLayers().forEach((layer) => {
+        if (layer.type === "video" || !layer.objectId) return;
+        const object = fabricRef.current?.getObjects().find(
+          (candidate: any) => candidate.name === layer.objectId,
+        );
+        if (!object) return;
+        const layerStart = Number(layer.startTime || 0);
+        const layerEnd = layerStart + Number(layer.duration || 0);
+        object.visible =
+          layer.visible !== false &&
+          currentTime >= layerStart &&
+          currentTime < layerEnd;
+      });
       fabricRef.current.requestRenderAll();
     }
-  }, [currentTime, isPlaying, videoUrl]);
+  }, [composition, currentTime, getLayers, isPlaying, videoUrl]);
 
   useEffect(() => {
-    if (videoRef.current) {
-      videoRef.current.muted = isMuted;
-      videoRef.current.volume = volume;
-    }
-  }, [isMuted, volume]);
+    [videoARef.current, videoBRef.current].forEach((video) => {
+      if (!video) return;
+      video.muted = isMuted;
+      video.volume = volume;
+      video.playbackRate = playbackRate;
+    });
+  }, [isMuted, playbackRate, volume]);
+
+  useEffect(() => {
+    if (isPlaying) return;
+    [videoARef.current, videoBRef.current].forEach((video) => video?.pause());
+  }, [isPlaying]);
+
+  useEffect(() => {
+    const activeLayerIds = new Set(audioLayers.map((layer) => layer.id));
+
+    audioLayers.forEach((layer) => {
+      const sourceUrl = layer.data?.url;
+      if (!sourceUrl) return;
+      const existingAudio = audioElementsRef.current.get(layer.id);
+      if (existingAudio?.dataset.sourceUrl === sourceUrl) return;
+
+      existingAudio?.pause();
+      if (existingAudio) {
+        existingAudio.removeAttribute("src");
+        existingAudio.load();
+      }
+
+      const audio = new Audio(sourceUrl);
+      audio.preload = "auto";
+      audio.dataset.sourceUrl = sourceUrl;
+      audioElementsRef.current.set(layer.id, audio);
+    });
+
+    audioElementsRef.current.forEach((audio, layerId) => {
+      if (activeLayerIds.has(layerId)) return;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      audioElementsRef.current.delete(layerId);
+    });
+  }, [audioLayers]);
+
+  useEffect(() => {
+    audioLayers.forEach((layer) => {
+      const audio = audioElementsRef.current.get(layer.id);
+      if (!audio) return;
+
+      const layerStart = Number(layer.startTime || 0);
+      const layerDuration = Number(layer.duration || 0);
+      const mediaStart = Number(layer.mediaStart || 0);
+      const sourceDuration = Number(layer.data?.sourceDuration || 0);
+      const shouldLoop = Boolean(layer.data?.loop && sourceDuration > 0);
+      const isActive =
+        layer.visible !== false &&
+        currentTime >= layerStart &&
+        currentTime < layerStart + layerDuration;
+      const rawTargetTime = Math.max(
+        0,
+        mediaStart + currentTime - layerStart,
+      );
+      const targetTime = shouldLoop
+        ? rawTargetTime % sourceDuration
+        : rawTargetTime;
+
+      audio.muted = false;
+      audio.volume = Math.min(
+        1,
+        Math.max(0, Number(layer.data?.volume ?? 1)),
+      );
+      audio.playbackRate = playbackRate || 1;
+      audio.loop = shouldLoop;
+
+      if (!isActive) {
+        if (!audio.paused) audio.pause();
+        return;
+      }
+
+      if (
+        !Number.isFinite(audio.currentTime) ||
+        Math.abs(audio.currentTime - targetTime) > 0.2
+      ) {
+        try {
+          audio.currentTime = targetTime;
+        } catch {
+          // Metadata loading will make the next synchronization succeed.
+        }
+      }
+
+      if (isPlaying && audio.paused) {
+        void audio.play().catch(() => {});
+      } else if (!isPlaying && !audio.paused) {
+        audio.pause();
+      }
+    });
+  }, [audioLayers, currentTime, isPlaying, playbackRate]);
+
+  useEffect(() => {
+    return () => {
+      audioElementsRef.current.forEach((audio) => {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      });
+      audioElementsRef.current.clear();
+    };
+  }, []);
 
   const handleSeek = (val: number[]) => {
-    if (videoRef.current) {
-      videoRef.current.currentTime = val[0];
-      setVideoState({ currentTime: val[0] });
-    }
+    setVideoState({ currentTime: val[0] });
   };
 
-  const togglePlayback = () => {
-    if (isPlaying) {
+  const togglePlayback = useCallback(() => {
+    const latestState = useEditorStore.getState().videoState;
+    if (latestState.isPlaying) {
+      videoARef.current?.pause();
+      videoBRef.current?.pause();
       setVideoState({ isPlaying: false });
       return;
     }
 
-    const videoLayers = getLayers().filter((layer) => layer.type === "video");
-    const hasActiveVideo = videoLayers.some((layer) => {
-      const layerStart = Number(layer.startTime || 0);
-      const layerEnd = layerStart + Number(layer.duration || 0);
-      return currentTime >= layerStart && currentTime < layerEnd;
-    });
-    const firstVideoStart = videoLayers.reduce(
-      (earliest, layer) =>
-        Math.min(earliest, Number(layer.startTime || 0)),
-      Number.POSITIVE_INFINITY,
-    );
-
     setVideoState({
       currentTime:
-        !hasActiveVideo && Number.isFinite(firstVideoStart)
-          ? firstVideoStart
-          : currentTime,
+        latestState.currentTime >= composition.duration - 0.01
+          ? 0
+          : latestState.currentTime,
       isPlaying: true,
     });
-  };
+  }, [composition.duration, setVideoState]);
+
+  useEffect(() => {
+    const handleSpacebar = (event: KeyboardEvent) => {
+      if (
+        event.code !== "Space" ||
+        event.repeat ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey
+      ) {
+        return;
+      }
+
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.isContentEditable ||
+        target?.closest(
+          "input, textarea, select, button, [contenteditable='true'], [role='slider']",
+        )
+      ) {
+        return;
+      }
+
+      event.preventDefault();
+      togglePlayback();
+    };
+
+    window.addEventListener("keydown", handleSpacebar);
+    return () => window.removeEventListener("keydown", handleSpacebar);
+  }, [togglePlayback]);
+
+  const getSafeTime = (time: number) =>
+    Number.isFinite(time) ? Math.max(0, time) : 0;
 
   const formatTime = (time: number) => {
-    const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
+    const safeTime = getSafeTime(time);
+    const mins = Math.floor(safeTime / 60);
+    const secs = Math.floor(safeTime % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
   };
 
-  const handleExport = async () => {
-    if (!videoUrl) return;
-    setIsExported(false);
-    toast.promise(
-      new Promise((resolve) => {
-        let progress = 0;
-        const interval = setInterval(() => {
-          progress += 5;
-          if (progress >= 100) {
-            clearInterval(interval);
-            setIsExported(true);
-            setDownloadUrl(videoUrl); // Simulate download of the same file
-            resolve(true);
-          }
-        }, 150);
-      }),
-      {
-        loading: "Rendering video layers & effects...",
-        success: "Video is ready for download!",
-        error: "Export failed",
-      },
-    );
+  const formatTimeParts = (time: number) => {
+    const totalCentiseconds = Math.floor(getSafeTime(time) * 100);
+    const mins = Math.floor(totalCentiseconds / 6000);
+    const secs = Math.floor((totalCentiseconds % 6000) / 100);
+
+    return {
+      main: `${mins}:${secs.toString().padStart(2, "0")}`,
+      fraction: (totalCentiseconds % 100).toString().padStart(2, "0"),
+    };
   };
 
-  const handleAddText = useCallback(async () => {
-    if (!fabricRef.current) return;
-    const objectId = `text_${Date.now()}`;
-    const text = new IText("Enter subtitle...", {
-      left: 1920 / 2,
-      top: 1080 / 2,
-      fontFamily: "Inter",
-      fill: "#ffffff",
-      fontSize: 80,
-      fontWeight: "bold",
-      originX: "center",
-      originY: "center",
-      name: objectId,
-    });
-    fabricRef.current.add(text);
-    fabricRef.current.setActiveObject(text);
-
-    addLayer({
-      type: "text",
-      name: "Text Overlay",
-      locked: false,
-      visible: true,
-      startTime: currentTime,
-      duration: 5,
-      objectId: objectId,
-    });
-    toast.success("Subtitle added to timeline");
-  }, [addLayer, currentTime]);
-
-  const handleAddSubtitle = useCallback(async () => {
-    if (!fabricRef.current) return;
-    const objectId = `subtitle_${Date.now()}`;
-    const text = new IText("Type subtitle here...", {
-      left: 1920 / 2,
-      top: 1080 - 150, // Bottom alignment
-      fontFamily: "Inter",
-      fill: "#ffffff",
-      fontSize: 60,
-      fontWeight: "bold",
-      originX: "center",
-      originY: "center",
-      name: objectId,
-      backgroundColor: "rgba(0,0,0,0.5)",
-      padding: 10,
-    });
-    fabricRef.current.add(text);
-    fabricRef.current.setActiveObject(text);
-
-    addLayer({
-      type: "text",
-      name: "Subtitle",
-      locked: false,
-      visible: true,
-      startTime: currentTime,
-      duration: 3,
-      objectId: objectId,
-    });
-    toast.success("Subtitle segment created");
-  }, [addLayer, currentTime]);
-
-  const handleAddImage = useCallback(async () => {
-    if (!fabricRef.current) return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) {
-        const url = URL.createObjectURL(file);
-        const img = await FabricImage.fromURL(url);
-        const objectId = `img_${Date.now()}`;
-
-        // Scale to fit nicely
-        const scale = Math.min(800 / img.width!, 600 / img.height!);
-        img.set({
-          scaleX: scale,
-          scaleY: scale,
-          left: 1920 / 2,
-          top: 1080 / 2,
-          originX: "center",
-          originY: "center",
-          name: objectId,
-        });
-
-        fabricRef.current?.add(img);
-        fabricRef.current?.setActiveObject(img);
-
-        addLayer({
-          type: "image",
-          name: file.name,
-          locked: false,
-          visible: true,
-          startTime: currentTime,
-          duration: 5,
-          objectId: objectId,
-        });
-        toast.success("Image overlay added");
+  const handleExport = async () => {
+    setIsExported(false);
+    const toastId = toast.loading("Rendering composition...");
+    try {
+      const { exportVideo } = await import("@/lib/video-renderer");
+      const rendered = await exportVideo("mp4");
+      const formData = new FormData();
+      formData.append(
+        "file",
+        new File([rendered.blob], `composition.${rendered.extension}`, {
+          type: rendered.mimeType,
+        }),
+      );
+      formData.append("extension", "mp4");
+      const response = await fetch("/api/upload-rendered-video", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.url) {
+        throw new Error(result?.error || "MP4 conversion failed");
       }
-    };
-    input.click();
-  }, [addLayer, currentTime]);
-
-  const handleAddAudio = useCallback(async () => {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "audio/*";
-    input.onchange = async (e) => {
-      const file = (e.target as HTMLInputElement).files?.[0];
-      if (file) {
-        const url = URL.createObjectURL(file);
-        addLayer({
-          type: "audio",
-          name: file.name,
-          locked: false,
-          visible: true,
-          startTime: currentTime,
-          duration: 10, // Default 10s audio clip
-          data: { url },
-        });
-        toast.success("Audio track added to timeline");
-      }
-    };
-    input.click();
-  }, [addLayer, currentTime]);
-
-  const handleSplit = useCallback(() => {
-    // Find a layer to split (selected or first video)
-    const layers = getLayers();
-    const selectedLayerId = globalCanvas.selectedLayerId;
-    let targetLayerId = selectedLayerId;
-
-    if (!targetLayerId) {
-      const videoLayer = layers.find((l) => l.type === "video");
-      if (videoLayer) targetLayerId = videoLayer.id;
+      setDownloadUrl(result.url);
+      setIsExported(true);
+      toast.success("MP4 is ready.", { id: toastId });
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Export failed",
+        { id: toastId },
+      );
     }
+  };
 
-    if (!targetLayerId) {
-      toast.error("No layer selected to split");
-      return;
-    }
-
-    splitLayer(targetLayerId, currentTime);
-    toast.success("Layer split at current time");
-  }, [getLayers, globalCanvas.selectedLayerId, splitLayer, currentTime]);
+  const absoluteTimeParts = formatTimeParts(currentTime);
 
   return (
     <div className="flex-1 flex flex-col h-full bg-[#0a0a0c] overflow-hidden">
@@ -480,7 +480,10 @@ export function VideoPlayerCanvas() {
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => setVideoEditorOpen(false)}
+            onClick={() => {
+              setVideoEditorOpen(false);
+              setEditorMode("photo");
+            }}
             className="text-white/40 hover:text-white hover:bg-white/5 rounded-lg"
           >
             ← Back
@@ -514,60 +517,29 @@ export function VideoPlayerCanvas() {
       </div>
 
       <div className="flex-1 flex overflow-hidden">
-        {/* Left Vertical Tool Rail */}
-        <div className="w-16 border-r border-white/5 bg-[#0a0a0c] flex flex-col items-center py-6 gap-6">
-          <button
-            onClick={handleAddText}
-            className="p-3 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all flex flex-col items-center gap-1 group"
-          >
-            <Type className="w-5 h-5 group-hover:scale-110 transition-transform" />
-            <span className="text-[8px] uppercase font-bold tracking-tighter">
-              Text
-            </span>
-          </button>
-          <button
-            onClick={handleAddSubtitle}
-            className="p-3 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all flex flex-col items-center gap-1 group bg-white/5"
-          >
-            <Sparkles className="w-5 h-5 text-purple-400 group-hover:scale-110 transition-transform" />
-            <span className="text-[8px] uppercase font-bold tracking-tighter">
-              Subtitles
-            </span>
-          </button>
-          <button
-            onClick={handleAddImage}
-            className="p-3 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all flex flex-col items-center gap-1 group"
-          >
-            <ImageIcon className="w-5 h-5 group-hover:scale-110 transition-transform" />
-            <span className="text-[8px] uppercase font-bold tracking-tighter">
-              Image
-            </span>
-          </button>
-          <button
-            onClick={handleAddAudio}
-            className="p-3 text-white/40 hover:text-white hover:bg-white/5 rounded-xl transition-all flex flex-col items-center gap-1 group"
-          >
-            <Music className="w-5 h-5 group-hover:scale-110 transition-transform" />
-            <span className="text-[8px] uppercase font-bold tracking-tighter">
-              Audio
-            </span>
-          </button>
-        </div>
-
         {/* Main Workspace */}
-        <div className="flex-1 flex flex-col bg-[#050507] relative p-12">
+        <div className="relative flex min-w-0 flex-1 flex-col bg-[#050507] p-4">
           {/* Scene Container */}
-          <div className="flex-1 flex items-center justify-center relative">
+          <div className="relative flex min-h-0 flex-1 items-center justify-center">
             <div
               ref={containerRef}
-              className="relative w-full max-w-4xl bg-black rounded-2xl overflow-hidden shadow-[0_0_100px_rgba(37,99,235,0.1)] border border-white/10 group"
+              className="group relative h-full w-auto max-h-full max-w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-[0_0_100px_rgba(37,99,235,0.1)]"
               style={{
                 aspectRatio: `${videoResolution.width} / ${videoResolution.height}`,
               }}
             >
               <video
-                ref={videoRef}
-                className="w-full h-full object-contain transition-all duration-200"
+                ref={videoARef}
+                className="absolute inset-0 h-full w-full object-contain"
+                style={{
+                  filter: `grayscale(${filters.grayscale}%) blur(${filters.blur}px) brightness(${filters.brightness}%)`,
+                }}
+                playsInline
+                preload="auto"
+              />
+              <video
+                ref={videoBRef}
+                className="absolute inset-0 h-full w-full object-contain"
                 style={{
                   filter: `grayscale(${filters.grayscale}%) blur(${filters.blur}px) brightness(${filters.brightness}%)`,
                 }}
@@ -607,210 +579,24 @@ export function VideoPlayerCanvas() {
           </div>
 
           {/* Floating Time Info */}
-          <div className="absolute top-8 right-8 flex flex-col items-end gap-1">
+          <div className="absolute right-8 top-8 flex w-32 flex-col items-end gap-1 text-right">
             <span className="text-[10px] uppercase font-black tracking-widest text-white/20">
               Absolute Time
             </span>
-            <span className="text-3xl font-mono font-light text-white tracking-tighter">
-              {formatTime(currentTime)}
-              <span className="text-white/20">
-                .
-                {Math.floor((currentTime % 1) * 100)
-                  .toString()
-                  .padStart(2, "0")}
+            <span
+              className="inline-flex w-full items-baseline justify-end font-mono text-3xl font-light leading-none tracking-normal text-white tabular-nums"
+              aria-live="off"
+            >
+              <span className="w-[5ch] text-right">
+                {absoluteTimeParts.main}
+              </span>
+              <span className="w-[3ch] text-left text-white/20">
+                .{absoluteTimeParts.fraction}
               </span>
             </span>
           </div>
         </div>
 
-        {/* Professional Sidebar */}
-        <div className="w-80 border-l border-white/5 bg-[#0f0f12] flex flex-col p-6 gap-8 overflow-y-auto no-scrollbar">
-          <section className="space-y-4">
-            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30 border-b border-white/5 pb-2">
-              Properties
-            </h3>
-            <div className="space-y-6">
-              {/* Playback Speed */}
-              <div className="space-y-3">
-                <label className="text-[10px] font-bold text-white/60 uppercase">
-                  Speed Factor
-                </label>
-                <div className="grid grid-cols-4 gap-1.5">
-                  {[0.5, 1, 1.5, 2].map((s) => (
-                    <button
-                      key={s}
-                      onClick={() => {
-                        setVideoState({ playbackRate: s });
-                        if (videoRef.current) videoRef.current.playbackRate = s;
-                      }}
-                      className={cn(
-                        "h-8 rounded-md text-[10px] font-black transition-all border",
-                        playbackRate === s
-                          ? "bg-blue-600 border-blue-400 text-white shadow-lg shadow-blue-500/20"
-                          : "bg-[#18181b] border-white/10 text-white/40 hover:text-white",
-                      )}
-                    >
-                      {s}x
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Volume */}
-              <div className="space-y-3">
-                <div className="flex justify-between items-center">
-                  <label className="text-[10px] font-bold text-white/60 uppercase">
-                    Audio Level
-                  </label>
-                  <span className="text-[10px] font-mono text-white/40">
-                    {Math.round(volume * 100)}%
-                  </span>
-                </div>
-                <div className="flex items-center gap-3">
-                  <button
-                    onClick={() => setVideoState({ isMuted: !isMuted })}
-                    className="p-2 bg-[#18181b] rounded-lg border border-white/5 text-white/40 hover:text-white"
-                  >
-                    {isMuted ? (
-                      <VolumeX className="w-4 h-4" />
-                    ) : (
-                      <Volume2 className="w-4 h-4" />
-                    )}
-                  </button>
-                  <Slider
-                    value={[isMuted ? 0 : volume]}
-                    max={1}
-                    step={0.01}
-                    onValueChange={(val) =>
-                      setVideoState({ volume: val[0], isMuted: val[0] === 0 })
-                    }
-                  />
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30 border-b border-white/5 pb-2 flex justify-between">
-              <span>Visual Effects</span>
-              <span
-                className="text-blue-400 cursor-pointer hover:text-blue-300"
-                onClick={() =>
-                  setFilters({ grayscale: 0, blur: 0, brightness: 100 })
-                }
-              >
-                Reset
-              </span>
-            </h3>
-            <div className="space-y-4">
-              <div className="space-y-1">
-                <span className="text-[9px] text-white/40 uppercase">
-                  Grayscale
-                </span>
-                <Slider
-                  value={[filters.grayscale]}
-                  max={100}
-                  step={1}
-                  onValueChange={(val) =>
-                    setFilters((prev) => ({ ...prev, grayscale: val[0] }))
-                  }
-                  className="py-1"
-                />
-              </div>
-              <div className="space-y-1">
-                <span className="text-[9px] text-white/40 uppercase">Blur</span>
-                <Slider
-                  value={[filters.blur]}
-                  max={20}
-                  step={1}
-                  onValueChange={(val) =>
-                    setFilters((prev) => ({ ...prev, blur: val[0] }))
-                  }
-                  className="py-1"
-                />
-              </div>
-              <div className="space-y-1">
-                <span className="text-[9px] text-white/40 uppercase">
-                  Brightness
-                </span>
-                <Slider
-                  value={[filters.brightness]}
-                  min={0}
-                  max={200}
-                  step={1}
-                  onValueChange={(val) =>
-                    setFilters((prev) => ({ ...prev, brightness: val[0] }))
-                  }
-                  className="py-1"
-                />
-              </div>
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30 border-b border-white/5 pb-2">
-              Primary Trim
-            </h3>
-            <div className="space-y-8 bg-[#18181b]/50 rounded-xl p-4 border border-white/5">
-              <div className="space-y-3">
-                <div className="flex justify-between text-[10px] font-bold">
-                  <span className="text-white/40">IN POINT</span>
-                  <span className="text-blue-400">{formatTime(startTime)}</span>
-                </div>
-                <Slider
-                  value={[startTime]}
-                  max={endTime}
-                  step={0.1}
-                  onValueChange={(val) => setVideoState({ startTime: val[0] })}
-                />
-              </div>
-              <div className="space-y-3">
-                <div className="flex justify-between text-[10px] font-bold">
-                  <span className="text-white/40">OUT POINT</span>
-                  <span className="text-red-400">{formatTime(endTime)}</span>
-                </div>
-                <Slider
-                  value={[endTime]}
-                  min={startTime}
-                  max={duration}
-                  step={0.1}
-                  onValueChange={(val) => setVideoState({ endTime: val[0] })}
-                />
-              </div>
-            </div>
-          </section>
-
-          <section className="space-y-4">
-            <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-white/30 border-b border-white/5 pb-2">
-              Layers List
-            </h3>
-            <div className="space-y-2">
-              {getLayers().map((layer) => (
-                <div
-                  key={layer.id}
-                  className="flex items-center justify-between p-2 bg-white/5 rounded-lg border border-white/5 hover:border-white/10 transition-all group/layer"
-                >
-                  <div className="flex items-center gap-3">
-                    {layer.type === "text" ? (
-                      <Type className="w-3.5 h-3.5 text-blue-400" />
-                    ) : (
-                      <ImageIcon className="w-3.5 h-3.5 text-orange-400" />
-                    )}
-                    <span className="text-[10px] font-bold text-white/80 truncate w-32">
-                      {layer.name}
-                    </span>
-                  </div>
-                  <button
-                    onClick={() => deleteLayer(layer.id)}
-                    className="text-white/20 hover:text-red-400 opacity-0 group-hover/layer:opacity-100 transition-opacity"
-                  >
-                    <Trash2 className="w-3 h-3" />
-                  </button>
-                </div>
-              ))}
-            </div>
-          </section>
-        </div>
       </div>
 
       {/* Control Rail */}
@@ -839,19 +625,6 @@ export function VideoPlayerCanvas() {
           <span className="text-[10px] font-mono text-white/40">
             {formatTime(duration)}
           </span>
-        </div>
-
-        <div className="flex items-center gap-4">
-          <button
-            onClick={handleSplit}
-            className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 rounded-lg border border-white/5 text-[10px] font-black uppercase tracking-widest text-white/60 transition-all active:scale-95"
-          >
-            <Scissors className="w-3.5 h-3.5" />
-            Split
-          </button>
-          <button className="p-2 text-white/20 hover:text-white transition-colors">
-            <Maximize className="w-5 h-5" />
-          </button>
         </div>
       </div>
     </div>
