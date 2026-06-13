@@ -456,10 +456,12 @@ export function VideoPlayerCanvas() {
         body: formData,
       });
       const result = await response.json();
-      if (!response.ok || !result?.url) {
+      if (!response.ok || !result?.key) {
         throw new Error(result?.error || "MP4 conversion failed");
       }
-      setDownloadUrl(result.url);
+      setDownloadUrl(
+        `/api/download?key=${encodeURIComponent(result.key)}&filename=${encodeURIComponent("pixigen-video.mp4")}`,
+      );
       setIsExported(true);
       toast.success("MP4 is ready.", { id: toastId });
     } catch (error) {

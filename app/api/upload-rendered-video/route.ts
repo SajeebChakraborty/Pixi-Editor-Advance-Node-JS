@@ -39,7 +39,8 @@ const transcodeWebmToMp4 = async (inputBuffer: Buffer): Promise<Buffer> => {
         "-movflags +faststart",
         "-preset veryfast",
         "-crf 23",
-        "-an",
+        "-c:a aac",
+        "-b:a 192k",
       ])
       .format("mp4")
       .on("end", () => resolve())
@@ -83,7 +84,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: "S3 upload failed" }, { status: 500 });
     }
 
-    return NextResponse.json({ success: true, url: publicUrl, extension });
+    return NextResponse.json({
+      success: true,
+      url: publicUrl,
+      key: fileName,
+      extension,
+    });
   } catch (error: any) {
     console.error("[UPLOAD_RENDERED_VIDEO_ERROR]", error);
     return NextResponse.json(

@@ -62,6 +62,32 @@ const waitForMetadata = (video: HTMLVideoElement) =>
     video.addEventListener("error", fail, { once: true });
   });
 
+const waitForAudioMetadata = (audio: HTMLAudioElement) =>
+  new Promise<void>((resolve, reject) => {
+    if (audio.readyState >= 1) {
+      resolve();
+      return;
+    }
+    const timeoutId = window.setTimeout(
+      () => reject(new Error("Timed out while loading an export audio source")),
+      20000,
+    );
+    const finish = () => {
+      window.clearTimeout(timeoutId);
+      audio.removeEventListener("loadedmetadata", finish);
+      audio.removeEventListener("error", fail);
+      resolve();
+    };
+    const fail = () => {
+      window.clearTimeout(timeoutId);
+      audio.removeEventListener("loadedmetadata", finish);
+      audio.removeEventListener("error", fail);
+      reject(new Error("Could not decode audio used by this composition"));
+    };
+    audio.addEventListener("loadedmetadata", finish, { once: true });
+    audio.addEventListener("error", fail, { once: true });
+  });
+
 const drawContainedVideo = (
   context: CanvasRenderingContext2D,
   video: HTMLVideoElement,
@@ -131,7 +157,7 @@ export const exportVideo = async (
         video.crossOrigin = "anonymous";
       }
       video.preload = "auto";
-      video.muted = true;
+      video.muted = false;
       video.playsInline = true;
       video.src = resolvedSource;
       video.load();
@@ -140,9 +166,64 @@ export const exportVideo = async (
     }),
   );
 
+  const AudioContextClass =
+    window.AudioContext ||
+    (window as typeof window & { webkitAudioContext?: typeof AudioContext })
+      .webkitAudioContext;
+  if (!AudioContextClass) {
+    throw new Error("This browser cannot mix audio during video export.");
+  }
+
+  const audioContext = new AudioContextClass();
+  await audioContext.resume();
+  const audioDestination = audioContext.createMediaStreamDestination();
+  const sourceVideoGains = new Map<string, GainNode>();
+
+  sourceVideos.forEach((video, sourceUrl) => {
+    const source = audioContext.createMediaElementSource(video);
+    const gain = audioContext.createGain();
+    gain.gain.value = 0;
+    source.connect(gain).connect(audioDestination);
+    sourceVideoGains.set(sourceUrl, gain);
+  });
+
+  const audioLayers = layers.filter(
+    (layer) =>
+      layer.type === "audio" &&
+      layer.visible !== false &&
+      Boolean(layer.data?.url),
+  );
+  const timelineAudio = new Map<
+    string,
+    { element: HTMLAudioElement; gain: GainNode }
+  >();
+  await Promise.all(
+    audioLayers.map(async (layer) => {
+      const sourceUrl = String(layer.data?.url);
+      const resolvedSource = resolveVideoPlaybackUrl(sourceUrl);
+      const audio = new Audio();
+      if (videoNeedsCrossOrigin(resolvedSource)) {
+        audio.crossOrigin = "anonymous";
+      }
+      audio.preload = "auto";
+      audio.src = resolvedSource;
+      audio.load();
+      await waitForAudioMetadata(audio);
+
+      const source = audioContext.createMediaElementSource(audio);
+      const gain = audioContext.createGain();
+      gain.gain.value = 0;
+      source.connect(gain).connect(audioDestination);
+      timelineAudio.set(layer.id, { element: audio, gain });
+    }),
+  );
+
   const mimeType =
     pickRecorderMime(preferredFormat) || pickRecorderMime("webm") || "";
   const stream = renderCanvas.captureStream(60);
+  audioDestination.stream
+    .getAudioTracks()
+    .forEach((track) => stream.addTrack(track));
   const mediaRecorder = new MediaRecorder(
     stream,
     mimeType ? { mimeType } : undefined,
@@ -193,7 +274,13 @@ export const exportVideo = async (
     );
 
     sourceVideos.forEach((video, url) => {
-      if (!activeUrls.has(url) && !video.paused) video.pause();
+      if (!activeUrls.has(url)) {
+        sourceVideoGains.get(url)?.gain.setValueAtTime(
+          0,
+          audioContext.currentTime,
+        );
+        if (!video.paused) video.pause();
+      }
     });
 
     context.fillStyle = "#000000";
@@ -211,10 +298,59 @@ export const exportVideo = async (
         }
       }
       if (video.paused) void video.play().catch(() => {});
+      sourceVideoGains.get(sourceUrl)?.gain.setValueAtTime(
+        store.videoState.isMuted
+          ? 0
+          : Math.min(1, Math.max(0, store.videoState.volume)) * frame.opacity,
+        audioContext.currentTime,
+      );
       context.save();
       context.globalAlpha = frame.opacity;
       drawContainedVideo(context, video, width, height);
       context.restore();
+    });
+
+    audioLayers.forEach((layer) => {
+      const timelineEntry = timelineAudio.get(layer.id);
+      if (!timelineEntry) return;
+
+      const { element: audio, gain } = timelineEntry;
+      const layerStart = Number(layer.startTime || 0);
+      const layerDuration = Number(layer.duration || 0);
+      const mediaStart = Number(layer.mediaStart || 0);
+      const sourceDuration = Number(layer.data?.sourceDuration || audio.duration || 0);
+      const shouldLoop = Boolean(layer.data?.loop && sourceDuration > 0);
+      const isActive =
+        compositionTime >= layerStart &&
+        compositionTime < layerStart + layerDuration;
+
+      if (!isActive) {
+        gain.gain.setValueAtTime(0, audioContext.currentTime);
+        if (!audio.paused) audio.pause();
+        return;
+      }
+
+      const rawTargetTime = Math.max(
+        0,
+        mediaStart + compositionTime - layerStart,
+      );
+      const targetTime = shouldLoop
+        ? rawTargetTime % sourceDuration
+        : rawTargetTime;
+      audio.loop = shouldLoop;
+      audio.playbackRate = playbackRate;
+      gain.gain.setValueAtTime(
+        Math.min(1, Math.max(0, Number(layer.data?.volume ?? 1))),
+        audioContext.currentTime,
+      );
+      if (Math.abs(audio.currentTime - targetTime) > 0.12) {
+        try {
+          audio.currentTime = targetTime;
+        } catch {
+          return;
+        }
+      }
+      if (audio.paused) void audio.play().catch(() => {});
     });
 
     layers.forEach((layer) => {
@@ -259,6 +395,13 @@ export const exportVideo = async (
       video.removeAttribute("src");
       video.load();
     });
+    timelineAudio.forEach(({ element: audio }) => {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    });
+    stream.getTracks().forEach((track) => track.stop());
+    await audioContext.close();
     store.setVideoState(previousVideoState);
     layers.forEach((layer) => {
       if (!layer.objectId) return;

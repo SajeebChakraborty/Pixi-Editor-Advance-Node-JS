@@ -1,18 +1,74 @@
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
+
+const REGION = process.env.S3_REGION || "eu-north-1";
+const BUCKET_NAME = process.env.S3_BUCKET_NAME || "pixigen-first";
+const ENDPOINT = process.env.S3_ENDPOINT;
+const PUBLIC_URL = process.env.S3_PUBLIC_URL?.replace(/\/$/, "");
 
 const s3Client = new S3Client({
-  region: process.env.S3_REGION || "eu-north-1",
+  region: REGION,
   credentials: {
     accessKeyId: process.env.S3_ACCESS_KEY_ID || "",
     secretAccessKey: process.env.S3_SECRET_ACCESS_KEY || "",
   },
-  // If using a custom endpoint (like MinIO or R2), otherwise comment out
-  // endpoint: process.env.S3_ENDPOINT
+  ...(ENDPOINT
+    ? {
+        endpoint: ENDPOINT,
+        forcePathStyle: true,
+      }
+    : {}),
 });
 
-const BUCKET_NAME = process.env.S3_BUCKET_NAME || "pixigen-first";
+const formatStorageError = (error: unknown) => {
+  if (!(error instanceof Error)) return error;
+
+  const storageError = error as Error & {
+    $metadata?: {
+      httpStatusCode?: number;
+      requestId?: string;
+    };
+  };
+
+  return {
+    name: storageError.name,
+    message: storageError.message,
+    statusCode: storageError.$metadata?.httpStatusCode,
+    requestId: storageError.$metadata?.requestId,
+  };
+};
 
 export class S3Storage {
+  /**
+   * Verify credentials, endpoint, and bucket access without modifying data.
+   */
+  static async checkConnection(): Promise<boolean> {
+    try {
+      await s3Client.send(
+        new ListObjectsV2Command({
+          Bucket: BUCKET_NAME,
+          MaxKeys: 1,
+        }),
+      );
+
+      console.info(
+        `[S3] Storage connected successfully (bucket: ${BUCKET_NAME}, region: ${REGION})`,
+      );
+      return true;
+    } catch (error) {
+      console.error(
+        `[S3] Storage connection failed (bucket: ${BUCKET_NAME}, region: ${REGION})`,
+        formatStorageError(error),
+      );
+      return false;
+    }
+  }
+
   /**
    * Upload a file to S3
    */
@@ -29,12 +85,42 @@ export class S3Storage {
 
       await s3Client.send(command);
 
-      // Construct public URL
-      // https://BUCKET.s3.REGION.amazonaws.com/KEY
-      const url = `https://${BUCKET_NAME}.s3.${process.env.S3_REGION || "eu-north-1"}.amazonaws.com/${fileName}`;
-      return url;
+      console.info(
+        `[S3] Upload successful (bucket: ${BUCKET_NAME}, key: ${fileName}, bytes: ${body.byteLength})`,
+      );
+      return this.getPublicUrl(fileName);
     } catch (error) {
-      console.error("Error uploading to S3:", error);
+      console.error("[S3] Upload failed:", formatStorageError(error));
+      return null;
+    }
+  }
+
+  /**
+   * Read a private object for authenticated server-side downloads.
+   */
+  static async getFile(fileName: string) {
+    try {
+      const result = await s3Client.send(
+        new GetObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: fileName,
+        }),
+      );
+
+      if (!result.Body) {
+        throw new Error("Storage returned an empty response body");
+      }
+
+      return {
+        body: result.Body.transformToWebStream(),
+        contentType: result.ContentType,
+        contentLength: result.ContentLength,
+      };
+    } catch (error) {
+      console.error(
+        `[S3] Download failed (bucket: ${BUCKET_NAME}, key: ${fileName})`,
+        formatStorageError(error),
+      );
       return null;
     }
   }
@@ -52,7 +138,7 @@ export class S3Storage {
       await s3Client.send(command);
       return true;
     } catch (error) {
-      console.error("Error deleting from S3:", error);
+      console.error("[S3] Delete failed:", formatStorageError(error));
       return false;
     }
   }
@@ -61,6 +147,10 @@ export class S3Storage {
    * Get public URL (helper)
    */
   static getPublicUrl(fileName: string): string {
-    return `https://${BUCKET_NAME}.s3.${process.env.S3_REGION || "eu-north-1"}.amazonaws.com/${fileName}`;
+    if (PUBLIC_URL) {
+      return `${PUBLIC_URL}/${fileName}`;
+    }
+
+    return `https://${BUCKET_NAME}.s3.${REGION}.amazonaws.com/${fileName}`;
   }
 }

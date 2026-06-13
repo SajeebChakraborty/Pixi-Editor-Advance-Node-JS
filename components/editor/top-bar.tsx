@@ -130,6 +130,7 @@ export function TopBar() {
       let uploadResult: {
         success?: boolean;
         url?: string;
+        key?: string;
         extension?: string;
         error?: string;
       };
@@ -140,14 +141,13 @@ export function TopBar() {
           uploadBody.trim().slice(0, 280) || `Upload failed (HTTP ${uploadRes.status})`,
         );
       }
-      if (!uploadRes.ok || !uploadResult?.success || !uploadResult?.url) {
+      if (!uploadRes.ok || !uploadResult?.success || !uploadResult?.key) {
         throw new Error(uploadResult?.error || `Upload failed (HTTP ${uploadRes.status})`);
       }
 
-      const url = uploadResult.url as string;
       const fileExt = (uploadResult.extension || extension) as "mp4" | "webm";
       const fileName = `pixizen-video-${Date.now()}.${fileExt}`;
-      const downloadUrl = `/api/download?url=${encodeURIComponent(url)}&filename=${encodeURIComponent(fileName)}`;
+      const downloadUrl = `/api/download?key=${encodeURIComponent(uploadResult.key)}&filename=${encodeURIComponent(fileName)}`;
       const link = document.createElement("a");
       link.href = downloadUrl;
       link.download = fileName;
