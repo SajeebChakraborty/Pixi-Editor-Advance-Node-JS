@@ -1,21 +1,27 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { FabricImage } from "fabric";
 import { Button } from "@/components/ui/button";
 import { Slider } from "@/components/ui/slider";
 import { Label } from "@/components/ui/label";
 import {
   CirclePlay,
+  Link2,
+  Music,
   Play,
   Pause,
   RotateCcw,
   Scissors,
+  Trash2,
+  Upload,
   Volume2,
   VolumeX,
 } from "lucide-react";
 import { useEditorStore } from "@/lib/store";
 import { setVideoOverlayOpacity } from "@/lib/video-overlay";
+import { getLinkedVideoAudio } from "@/lib/linked-video-audio";
+import { toast } from "sonner";
 
 interface VideoPropertiesProps {
   selectedObject: FabricImage;
@@ -32,8 +38,16 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
     setVideoState,
     getSelectedLayer,
     updateLayer,
+    updateLayerData,
+    videoRecentAssets,
+    addRecentAsset,
   } = useEditorStore();
   const selectedLayer = getSelectedLayer();
+  const linkedAudio = getLinkedVideoAudio(selectedLayer);
+  const audioInputRef = useRef<HTMLInputElement>(null);
+  const previewAudioRef = useRef<HTMLAudioElement | null>(null);
+  const [previewingUrl, setPreviewingUrl] = useState<string | null>(null);
+  const [isUploadingAudio, setIsUploadingAudio] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [volume, setVolume] = useState(1);
   const [speed, setSpeed] = useState(1);
@@ -50,6 +64,13 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   const element = selectedObject.getElement();
   const videoEl = ((selectedObject as any)._videoEl ||
     (element?.tagName === "VIDEO" ? element : null)) as HTMLVideoElement | null;
+
+  useEffect(() => {
+    return () => {
+      previewAudioRef.current?.pause();
+      previewAudioRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     if (!videoEl) return;
@@ -172,6 +193,122 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   const handleOpacity = (val: number) => {
     setVideoOverlayOpacity(selectedObject as any, val);
     setOpacity(val);
+  };
+
+  const getAudioDuration = (url: string) =>
+    new Promise<number>((resolve) => {
+      const audio = new Audio();
+      audio.preload = "metadata";
+      const finish = (value: number) => {
+        audio.removeAttribute("src");
+        audio.load();
+        resolve(value);
+      };
+      audio.onloadedmetadata = () =>
+        finish(Number.isFinite(audio.duration) ? audio.duration : 0);
+      audio.onerror = () => finish(0);
+      audio.src = url;
+      audio.load();
+    });
+
+  const assignLinkedAudio = async (name: string, url: string) => {
+    if (!selectedLayer) return;
+    const sourceDuration = await getAudioDuration(url);
+    if (sourceDuration <= 0) {
+      toast.error("Could not read this audio file.");
+      return;
+    }
+
+    updateLayerData(selectedLayer.id, {
+      linkedAudio: {
+        url,
+        name,
+        sourceDuration,
+        volume: linkedAudio?.volume ?? 1,
+        loop: linkedAudio?.loop ?? false,
+        allowNativeAudio: false,
+      },
+    });
+    setVideoState({
+      currentTime: Number(selectedLayer.startTime || 0),
+      isPlaying: false,
+    });
+    toast.success(`Linked ${name} to ${selectedLayer.name}`);
+  };
+
+  const uploadLinkedAudio = async (file: File) => {
+    const isAudio =
+      file.type.startsWith("audio/") ||
+      /\.(mp3|mpeg|mpga|wav|m4a|aac|ogg|flac)$/i.test(file.name);
+    if (!isAudio) {
+      toast.error("Choose a valid audio file.");
+      return;
+    }
+
+    setIsUploadingAudio(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch("/api/upload-audio", {
+        method: "POST",
+        body: formData,
+      });
+      const result = await response.json();
+      if (!response.ok || !result?.url) {
+        throw new Error(result?.error || "Audio upload failed");
+      }
+      addRecentAsset(
+        { url: result.url, name: file.name, type: "audio" },
+        "video",
+      );
+      await assignLinkedAudio(file.name, result.url);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Audio upload failed",
+      );
+    } finally {
+      setIsUploadingAudio(false);
+    }
+  };
+
+  const toggleAudioPreview = (url: string) => {
+    setVideoState({ isPlaying: false });
+    if (previewingUrl === url) {
+      previewAudioRef.current?.pause();
+      setPreviewingUrl(null);
+      return;
+    }
+
+    previewAudioRef.current?.pause();
+    const audio = new Audio(url);
+    audio.volume = linkedAudio?.url === url ? linkedAudio.volume : 1;
+    audio.onended = () => setPreviewingUrl(null);
+    audio.onerror = () => {
+      setPreviewingUrl(null);
+      toast.error("Could not preview this audio.");
+    };
+    void audio.play().catch(() => {
+      setPreviewingUrl(null);
+      toast.error("Could not preview this audio.");
+    });
+    previewAudioRef.current = audio;
+    setPreviewingUrl(url);
+  };
+
+  const updateLinkedAudio = (updates: Record<string, unknown>) => {
+    if (!selectedLayer || !linkedAudio) return;
+    updateLayerData(selectedLayer.id, {
+      linkedAudio: { ...linkedAudio, ...updates },
+    });
+  };
+
+  const removeLinkedAudio = () => {
+    if (!selectedLayer) return;
+    previewAudioRef.current?.pause();
+    setPreviewingUrl(null);
+    updateLayerData(selectedLayer.id, { linkedAudio: null });
+    setVideoState({ isPlaying: false });
+    toast.success("Linked audio removed.");
   };
 
   const normalizeTrimRange = (start: number, end: number) => {
@@ -355,6 +492,154 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
             ))}
           </div>
         </div>
+      </div>
+
+      <div className="space-y-3 border-t border-white/5 pt-4">
+        <h3 className="flex items-center gap-2 rounded-md border border-white/10 bg-white/[0.05] px-2.5 py-2 text-[11px] font-bold uppercase tracking-widest text-gray-200">
+          <Link2 className="h-3.5 w-3.5 text-violet-400" />
+          Linked Audio
+        </h3>
+        <input
+          ref={audioInputRef}
+          type="file"
+          accept="audio/*,.mp3,.mpeg,.mpga,.wav,.m4a,.aac,.ogg,.flac"
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) void uploadLinkedAudio(file);
+          }}
+        />
+
+        {linkedAudio ? (
+          <div className="space-y-3 rounded-lg border border-violet-500/25 bg-violet-500/10 p-3">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => toggleAudioPreview(linkedAudio.url)}
+                className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-black/30 text-violet-200 hover:bg-violet-600"
+                title="Preview linked audio"
+              >
+                {previewingUrl === linkedAudio.url ? (
+                  <Pause className="h-3.5 w-3.5 fill-current" />
+                ) : (
+                  <Play className="ml-0.5 h-3.5 w-3.5 fill-current" />
+                )}
+              </button>
+              <div className="min-w-0 flex-1">
+                <p className="truncate text-xs font-bold">{linkedAudio.name}</p>
+                <p className="text-[9px] uppercase tracking-wider text-violet-300">
+                  Custom audio replaces native sound
+                </p>
+              </div>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={removeLinkedAudio}
+                className="h-8 w-8 text-red-400 hover:bg-red-500/10"
+                title="Remove linked audio"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between text-[10px] text-gray-300">
+                <span>Linked audio volume</span>
+                <span>{Math.round(linkedAudio.volume * 100)}%</span>
+              </div>
+              <Slider
+                value={[linkedAudio.volume]}
+                min={0}
+                max={1}
+                step={0.01}
+                onValueChange={(values) =>
+                  updateLinkedAudio({ volume: values[0] })
+                }
+              />
+            </div>
+
+            <label className="flex items-center justify-between text-[10px] text-gray-300">
+              Loop audio to fit video
+              <input
+                type="checkbox"
+                checked={linkedAudio.loop}
+                onChange={(event) =>
+                  updateLinkedAudio({ loop: event.target.checked })
+                }
+                className="h-4 w-4 accent-violet-500"
+              />
+            </label>
+            <label className="flex items-center justify-between text-[10px] text-gray-300">
+              Also play native video audio
+              <input
+                type="checkbox"
+                checked={linkedAudio.allowNativeAudio}
+                onChange={(event) =>
+                  updateLinkedAudio({
+                    allowNativeAudio: event.target.checked,
+                  })
+                }
+                className="h-4 w-4 accent-violet-500"
+              />
+            </label>
+          </div>
+        ) : (
+          <div className="rounded-lg border border-white/10 bg-white/[0.03] p-3 text-center text-[10px] text-gray-500">
+            No audio linked to this video
+          </div>
+        )}
+
+        <Button
+          variant="outline"
+          disabled={isUploadingAudio}
+          onClick={() => audioInputRef.current?.click()}
+          className="w-full border-white/10 bg-white/5 text-white hover:bg-white/10"
+        >
+          <Upload className="mr-2 h-4 w-4" />
+          {isUploadingAudio
+            ? "Uploading..."
+            : linkedAudio
+              ? "Replace audio"
+              : "Upload audio"}
+        </Button>
+
+        {videoRecentAssets.some((asset) => asset.type === "audio") && (
+          <div className="space-y-2">
+            <p className="text-[9px] font-bold uppercase tracking-widest text-gray-500">
+              Recent audio
+            </p>
+            {videoRecentAssets
+              .filter((asset) => asset.type === "audio")
+              .map((asset) => (
+                <div
+                  key={asset.id}
+                  className="flex items-center gap-2 rounded-md border border-white/5 bg-white/[0.03] p-2"
+                >
+                  <Music className="h-3.5 w-3.5 shrink-0 text-violet-400" />
+                  <span className="min-w-0 flex-1 truncate text-[10px]">
+                    {asset.name}
+                  </span>
+                  <button
+                    onClick={() => toggleAudioPreview(asset.url)}
+                    className="text-gray-400 hover:text-white"
+                    title="Preview audio"
+                  >
+                    {previewingUrl === asset.url ? (
+                      <Pause className="h-3.5 w-3.5" />
+                    ) : (
+                      <Play className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => void assignLinkedAudio(asset.name, asset.url)}
+                    className="text-[9px] font-bold uppercase text-violet-300 hover:text-white"
+                  >
+                    Use
+                  </button>
+                </div>
+              ))}
+          </div>
+        )}
       </div>
 
       {/* Trimming */}

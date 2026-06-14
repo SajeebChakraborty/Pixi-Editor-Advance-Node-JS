@@ -7,6 +7,11 @@ import {
   videoNeedsCrossOrigin,
 } from "./video-playback-url";
 import { useEditorStore } from "./store";
+import {
+  getLinkedAudioTargetTime,
+  getLinkedVideoAudio,
+  isLinkedAudioActive,
+} from "./linked-video-audio";
 
 export type VideoExportFormat = "mp4" | "webm";
 
@@ -218,6 +223,37 @@ export const exportVideo = async (
     }),
   );
 
+  const linkedAudio = new Map<
+    string,
+    {
+      element: HTMLAudioElement;
+      gain: GainNode;
+      config: NonNullable<ReturnType<typeof getLinkedVideoAudio>>;
+    }
+  >();
+  await Promise.all(
+    composition.scenes.map(async (scene) => {
+      const config = getLinkedVideoAudio(scene.layer);
+      if (!config) return;
+
+      const resolvedSource = resolveVideoPlaybackUrl(config.url);
+      const audio = new Audio();
+      if (videoNeedsCrossOrigin(resolvedSource)) {
+        audio.crossOrigin = "anonymous";
+      }
+      audio.preload = "auto";
+      audio.src = resolvedSource;
+      audio.load();
+      await waitForAudioMetadata(audio);
+
+      const source = audioContext.createMediaElementSource(audio);
+      const gain = audioContext.createGain();
+      gain.gain.value = 0;
+      source.connect(gain).connect(audioDestination);
+      linkedAudio.set(scene.layer.id, { element: audio, gain, config });
+    }),
+  );
+
   const mimeType =
     pickRecorderMime(preferredFormat) || pickRecorderMime("webm") || "";
   const stream = renderCanvas.captureStream(60);
@@ -298,8 +334,10 @@ export const exportVideo = async (
         }
       }
       if (video.paused) void video.play().catch(() => {});
+      const customAudio = getLinkedVideoAudio(frame.scene.layer);
       sourceVideoGains.get(sourceUrl)?.gain.setValueAtTime(
-        store.videoState.isMuted
+        store.videoState.isMuted ||
+          Boolean(customAudio && !customAudio.allowNativeAudio)
           ? 0
           : Math.min(1, Math.max(0, store.videoState.volume)) * frame.opacity,
         audioContext.currentTime,
@@ -308,6 +346,41 @@ export const exportVideo = async (
       context.globalAlpha = frame.opacity;
       drawContainedVideo(context, video, width, height);
       context.restore();
+    });
+
+    const activeFrameByLayerId = new Map(
+      frames.map((frame) => [frame.scene.layer.id, frame]),
+    );
+    linkedAudio.forEach(({ element: audio, gain, config }, layerId) => {
+      const frame = activeFrameByLayerId.get(layerId);
+      const scene = frame?.scene;
+      const sceneElapsed = scene
+        ? Math.max(0, compositionTime - scene.timelineStart)
+        : 0;
+      const isActive =
+        Boolean(frame) && isLinkedAudioActive(config, sceneElapsed);
+
+      if (!isActive) {
+        gain.gain.setValueAtTime(0, audioContext.currentTime);
+        if (!audio.paused) audio.pause();
+        return;
+      }
+
+      const targetTime = getLinkedAudioTargetTime(config, sceneElapsed);
+      audio.loop = config.loop;
+      audio.playbackRate = playbackRate;
+      gain.gain.setValueAtTime(
+        config.volume * (frame?.opacity ?? 1),
+        audioContext.currentTime,
+      );
+      if (Math.abs(audio.currentTime - targetTime) > 0.12) {
+        try {
+          audio.currentTime = targetTime;
+        } catch {
+          return;
+        }
+      }
+      if (audio.paused) void audio.play().catch(() => {});
     });
 
     audioLayers.forEach((layer) => {
@@ -396,6 +469,11 @@ export const exportVideo = async (
       video.load();
     });
     timelineAudio.forEach(({ element: audio }) => {
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+    });
+    linkedAudio.forEach(({ element: audio }) => {
       audio.pause();
       audio.removeAttribute("src");
       audio.load();

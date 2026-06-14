@@ -762,7 +762,14 @@ export function Timeline() {
                           </div>
                         </div>
 
-                        <span className="truncate font-bold px-3 whitespace-nowrap z-0 pointer-events-none">
+                        <span className="flex min-w-0 items-center gap-1 truncate font-bold px-3 whitespace-nowrap z-0 pointer-events-none">
+                          {layer.type === "video" &&
+                            layer.data?.linkedAudio?.url && (
+                              <Music
+                                className="h-3 w-3 shrink-0 text-violet-600"
+                                aria-label="Linked audio"
+                              />
+                            )}
                           {layer.name}
                         </span>
 

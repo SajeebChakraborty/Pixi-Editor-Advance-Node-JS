@@ -20,6 +20,11 @@ import {
   buildVideoComposition,
   resolveCompositionFrame,
 } from "@/lib/video-composition";
+import {
+  getLinkedAudioTargetTime,
+  getLinkedVideoAudio,
+  isLinkedAudioActive,
+} from "@/lib/linked-video-audio";
 
 export function VideoPlayerCanvas() {
   const {
@@ -38,6 +43,7 @@ export function VideoPlayerCanvas() {
   const fabricRef = useRef<FabricCanvas | null>(null);
   const loadedVideoSourcesRef = useRef<(string | null)[]>([null, null]);
   const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
+  const linkedAudioElementsRef = useRef(new Map<string, HTMLAudioElement>());
   const videoResolutionRef = useRef({ width: 1920, height: 1080 });
   const [isExported, setIsExported] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
@@ -200,6 +206,7 @@ export function VideoPlayerCanvas() {
 
       const sourceUrl = frame.scene.layer.data?.url || videoUrl;
       if (!sourceUrl) return;
+      const linkedAudio = getLinkedVideoAudio(frame.scene.layer);
       const resolvedSource = resolveVideoPlaybackUrl(sourceUrl);
       const syncPlayback = () => {
         if (loadedVideoSourcesRef.current[index] !== resolvedSource) return;
@@ -234,6 +241,10 @@ export function VideoPlayerCanvas() {
 
       video.style.opacity = String(frame.opacity);
       video.style.display = "block";
+      video.muted =
+        isMuted || Boolean(linkedAudio && !linkedAudio.allowNativeAudio);
+      video.volume = volume;
+      video.playbackRate = playbackRate;
     });
 
     // Ensure fabric canvas is rendered when video visibility changes
@@ -253,16 +264,24 @@ export function VideoPlayerCanvas() {
       });
       fabricRef.current.requestRenderAll();
     }
-  }, [composition, currentTime, getLayers, isPlaying, videoUrl]);
+  }, [
+    composition,
+    currentTime,
+    getLayers,
+    isMuted,
+    isPlaying,
+    playbackRate,
+    videoUrl,
+    volume,
+  ]);
 
   useEffect(() => {
     [videoARef.current, videoBRef.current].forEach((video) => {
       if (!video) return;
-      video.muted = isMuted;
       video.volume = volume;
       video.playbackRate = playbackRate;
     });
-  }, [isMuted, playbackRate, volume]);
+  }, [playbackRate, volume]);
 
   useEffect(() => {
     if (isPlaying) return;
@@ -354,6 +373,101 @@ export function VideoPlayerCanvas() {
   }, [audioLayers, currentTime, isPlaying, playbackRate]);
 
   useEffect(() => {
+    const linkedEntries = composition.scenes
+      .map((scene) => ({
+        scene,
+        linkedAudio: getLinkedVideoAudio(scene.layer),
+      }))
+      .filter(
+        (
+          entry,
+        ): entry is typeof entry & {
+          linkedAudio: NonNullable<typeof entry.linkedAudio>;
+        } => Boolean(entry.linkedAudio),
+      );
+    const activeLayerIds = new Set(
+      linkedEntries.map(({ scene }) => scene.layer.id),
+    );
+
+    linkedEntries.forEach(({ scene, linkedAudio }) => {
+      const existing = linkedAudioElementsRef.current.get(scene.layer.id);
+      if (existing?.dataset.sourceUrl === linkedAudio.url) return;
+
+      existing?.pause();
+      if (existing) {
+        existing.removeAttribute("src");
+        existing.load();
+      }
+
+      const audio = new Audio(linkedAudio.url);
+      audio.preload = "auto";
+      audio.dataset.sourceUrl = linkedAudio.url;
+      linkedAudioElementsRef.current.set(scene.layer.id, audio);
+    });
+
+    linkedAudioElementsRef.current.forEach((audio, layerId) => {
+      if (activeLayerIds.has(layerId)) return;
+      audio.pause();
+      audio.removeAttribute("src");
+      audio.load();
+      linkedAudioElementsRef.current.delete(layerId);
+    });
+  }, [composition]);
+
+  useEffect(() => {
+    const activeFrames = new Map(
+      resolveCompositionFrame(composition, currentTime).map((frame) => [
+        frame.scene.layer.id,
+        frame,
+      ]),
+    );
+
+    composition.scenes.forEach((scene) => {
+      const linkedAudio = getLinkedVideoAudio(scene.layer);
+      const audio = linkedAudioElementsRef.current.get(scene.layer.id);
+      if (!linkedAudio || !audio) return;
+
+      const frame = activeFrames.get(scene.layer.id);
+      const sceneElapsed = Math.max(0, currentTime - scene.timelineStart);
+      const shouldPlay =
+        Boolean(frame) &&
+        scene.layer.visible !== false &&
+        isLinkedAudioActive(linkedAudio, sceneElapsed);
+      const targetTime = getLinkedAudioTargetTime(
+        linkedAudio,
+        sceneElapsed,
+      );
+
+      audio.muted = false;
+      audio.volume = linkedAudio.volume * (frame?.opacity ?? 1);
+      audio.playbackRate = playbackRate || 1;
+      audio.loop = linkedAudio.loop;
+
+      if (!shouldPlay) {
+        if (!audio.paused) audio.pause();
+        return;
+      }
+
+      if (
+        !Number.isFinite(audio.currentTime) ||
+        Math.abs(audio.currentTime - targetTime) > 0.2
+      ) {
+        try {
+          audio.currentTime = targetTime;
+        } catch {
+          // Metadata loading will make the next synchronization succeed.
+        }
+      }
+
+      if (isPlaying && audio.paused) {
+        void audio.play().catch(() => {});
+      } else if (!isPlaying && !audio.paused) {
+        audio.pause();
+      }
+    });
+  }, [composition, currentTime, isPlaying, playbackRate]);
+
+  useEffect(() => {
     return () => {
       audioElementsRef.current.forEach((audio) => {
         audio.pause();
@@ -361,6 +475,12 @@ export function VideoPlayerCanvas() {
         audio.load();
       });
       audioElementsRef.current.clear();
+      linkedAudioElementsRef.current.forEach((audio) => {
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+      });
+      linkedAudioElementsRef.current.clear();
     };
   }, []);
 

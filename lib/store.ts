@@ -140,6 +140,15 @@ export interface Asset {
   timestamp: number
 }
 
+export interface LinkedVideoAudio {
+  url: string
+  name: string
+  sourceDuration: number
+  volume: number
+  loop: boolean
+  allowNativeAudio: boolean
+}
+
 export interface VideoState {
   videoUrl: string | null
   currentTime: number
