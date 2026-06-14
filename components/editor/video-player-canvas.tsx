@@ -25,6 +25,10 @@ import {
   getLinkedVideoAudio,
   isLinkedAudioActive,
 } from "@/lib/linked-video-audio";
+import {
+  addMediaFromUrl,
+  applyPersistedLayerState,
+} from "@/lib/editor-utils";
 
 export function VideoPlayerCanvas() {
   const {
@@ -112,6 +116,46 @@ export function VideoPlayerCanvas() {
       window.removeEventListener("resize", syncCanvasSize);
     };
   }, [setVideoFabricCanvas, syncCanvasSize]);
+
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    let cancelled = false;
+
+    const restoreVisualLayers = async () => {
+      for (const layer of getLayers()) {
+        if (
+          cancelled ||
+          !layer.objectId ||
+          !layer.data?.url ||
+          !["image", "video", "sticker"].includes(layer.type) ||
+          canvas.getObjects().some((object: any) => object.name === layer.objectId)
+        ) {
+          continue;
+        }
+
+        const objectId = await addMediaFromUrl(
+          layer.data.url,
+          useEditorStore.getState(),
+          layer.type === "video" ? "video" : "image",
+          true,
+          layer.objectId,
+          layer.data.name || layer.name,
+          canvas,
+        );
+        const object = canvas
+          .getObjects()
+          .find((candidate: any) => candidate.name === objectId);
+        if (object) applyPersistedLayerState(object, layer);
+      }
+      canvas.requestRenderAll();
+    };
+
+    void restoreVisualLayers();
+    return () => {
+      cancelled = true;
+    };
+  }, [getLayers, globalCanvas.activePageId, globalCanvas.pages]);
 
   useEffect(() => {
     const width = Math.max(1, Number(globalCanvas.width || 1920));

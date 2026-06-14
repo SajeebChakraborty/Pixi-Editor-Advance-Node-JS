@@ -98,12 +98,13 @@ export class S3Storage {
   /**
    * Read a private object for authenticated server-side downloads.
    */
-  static async getFile(fileName: string) {
+  static async getFile(fileName: string, range?: string | null) {
     try {
       const result = await s3Client.send(
         new GetObjectCommand({
           Bucket: BUCKET_NAME,
           Key: fileName,
+          ...(range ? { Range: range } : {}),
         }),
       );
 
@@ -115,6 +116,8 @@ export class S3Storage {
         body: result.Body.transformToWebStream(),
         contentType: result.ContentType,
         contentLength: result.ContentLength,
+        contentRange: result.ContentRange,
+        acceptRanges: result.AcceptRanges,
       };
     } catch (error) {
       console.error(

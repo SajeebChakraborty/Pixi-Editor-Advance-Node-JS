@@ -10,6 +10,8 @@ import Image from "next/image";
 import { AssetService } from "@/lib/asset-service";
 import { addMediaFromUrl, PHOTO_DRAG_MIME_TYPE } from "@/lib/editor-utils";
 import { toast } from "sonner";
+import { uploadEditorAsset } from "@/lib/editor-assets";
+import { getEditorProjectId } from "@/lib/project-persistence";
 
 type ImageAsset = {
   id: string;
@@ -36,18 +38,6 @@ export function ImageTool() {
   useEffect(() => {
     loadImages();
   }, []);
-
-  const readFileAsDataUrl = (file: File): Promise<string> =>
-    new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = (event) => {
-        const url = event.target?.result as string;
-        if (url) resolve(url);
-        else reject(new Error("Failed to read image file"));
-      };
-      reader.onerror = () => reject(new Error("Error reading file"));
-      reader.readAsDataURL(file);
-    });
 
   const waitForFabricCanvas = async (timeoutMs = 5000): Promise<boolean> => {
     const startedAt = Date.now();
@@ -112,7 +102,12 @@ export function ImageTool() {
     );
 
     try {
-      const urls = await Promise.all(validFiles.map((file) => readFileAsDataUrl(file)));
+      const uploads = await Promise.all(
+        validFiles.map((file) =>
+          uploadEditorAsset(file, "image", getEditorProjectId()),
+        ),
+      );
+      const urls = uploads.map((upload) => upload.url);
       const hasVideoLayer = useEditorStore
         .getState()
         .getLayers()

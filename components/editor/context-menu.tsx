@@ -11,6 +11,7 @@ import {
   Files,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { commitCanvasHistory } from "@/lib/editor-actions";
 
 interface ContextMenuProps {
   x: number;
@@ -57,6 +58,7 @@ export function ContextMenu({ x, y, onClose }: ContextMenuProps) {
         break;
     }
     fabricCanvas.renderAll();
+    commitCanvasHistory(fabricCanvas);
     onClose();
   };
 

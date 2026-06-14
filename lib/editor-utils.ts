@@ -4,8 +4,60 @@ import { toast } from "sonner";
 import { resolveVideoPlaybackUrl } from "./video-playback-url";
 import { attachVideoOverlay } from "./video-overlay";
 import { buildVideoComposition } from "./video-composition";
+import {
+  applyBorder,
+  applyImageCrop,
+  applyImagePreset,
+  applyShadow,
+  DEFAULT_BORDER,
+  DEFAULT_IMAGE_ADJUSTMENTS,
+  DEFAULT_SHADOW,
+} from "./editor-actions";
+import { getPersistedLayerObjectState } from "./project-persistence";
 
 export const PHOTO_DRAG_MIME_TYPE = "application/x-pixi-photo";
+
+fabric.FabricObject.customProperties = Array.from(
+  new Set([
+    ...(fabric.FabricObject.customProperties || []),
+    "name",
+    "data",
+  ]),
+);
+
+export const applyPersistedLayerState = (
+  object: fabric.FabricObject,
+  layer: any,
+) => {
+  const persisted = getPersistedLayerObjectState(layer);
+  if (persisted) object.set(persisted as any);
+
+  if (
+    object instanceof fabric.FabricImage &&
+    layer.data &&
+    layer.type !== "video"
+  ) {
+    const adjustments =
+      layer.data.adjustments || DEFAULT_IMAGE_ADJUSTMENTS;
+    const effects = layer.data.effects || {};
+    applyImagePreset(
+      object,
+      effects.preset || "none",
+      adjustments,
+      effects.presetIntensity,
+    );
+    applyImageCrop(
+      object,
+      layer.data.crop || null,
+      layer.data.border?.radius || 0,
+    );
+    applyBorder(object, layer.data.border || DEFAULT_BORDER);
+    applyShadow(object, effects.shadow || DEFAULT_SHADOW);
+  }
+
+  object.setCoords();
+  object.canvas?.requestRenderAll();
+};
 
 export const addMediaFromUrl = async (
   url: string,

@@ -90,6 +90,12 @@ const VideoPlayerProperties = dynamic(
 
 import { useEditorStore } from "@/lib/store";
 import { addMediaFromUrl } from "@/lib/editor-utils";
+import {
+  restoreEditorProject,
+  startEditorAutosave,
+  getEditorProjectId,
+} from "@/lib/project-persistence";
+import { uploadEditorDataUrl } from "@/lib/editor-assets";
 
 function EditorContent() {
   const searchParams = useSearchParams();
@@ -149,40 +155,70 @@ function EditorContent() {
     return () => mediaQuery.removeEventListener("change", syncViewport);
   }, []);
 
-  // Restore the last editor universe unless the URL explicitly requests one.
+  // Restore the latest project draft before choosing the requested universe.
   useEffect(() => {
-    const lowerUrl = (initialUrl || "").toLowerCase();
-    const isVid =
-      initialType === "video" ||
-      hasPendingVideo ||
-      Boolean(lowerUrl.match(/\.(mp4|webm|mov)$/));
-    const isImg =
-      initialType === "image" ||
-      hasPendingImg ||
-      Boolean(lowerUrl.match(/\.(png|jpg|jpeg|gif|webp)$/));
-    const savedMode = window.localStorage.getItem("pixigen-editor-mode");
+    let cancelled = false;
+    const restore = async () => {
+      const restoredProject = await restoreEditorProject();
+      if (cancelled) return;
 
-    if (isVid) {
-      setActiveTool("video");
-      useEditorStore.getState().setEditorMode("video");
-      setIsLeftPanelOpen(true);
-    } else if (isImg || initialUrl) {
-      setActiveTool("photos");
-      useEditorStore.getState().setEditorMode("photo");
-      setIsLeftPanelOpen(true);
-    } else if (savedMode === "video") {
-      setActiveTool("video");
-      useEditorStore.getState().setEditorMode("video");
-      setIsLeftPanelOpen(true);
-    }
+      const lowerUrl = (initialUrl || "").toLowerCase();
+      const hasIncomingMedia =
+        Boolean(initialUrl) || hasPendingImg || hasPendingVideo;
+      const isIncomingVideo =
+        hasPendingVideo ||
+        (Boolean(initialUrl) &&
+          (initialType === "video" ||
+            Boolean(lowerUrl.match(/\.(mp4|webm|mov)$/))));
+      const isIncomingImage =
+        hasPendingImg ||
+        (Boolean(initialUrl) &&
+          (initialType === "image" ||
+            Boolean(lowerUrl.match(/\.(png|jpg|jpeg|gif|webp)$/))));
+      const savedMode = window.localStorage.getItem("pixigen-editor-mode");
 
-    setIsEditorModeRestored(true);
+      if (isIncomingVideo) {
+        setActiveTool("video");
+        useEditorStore.getState().setEditorMode("video");
+        setIsLeftPanelOpen(true);
+      } else if (isIncomingImage || (hasIncomingMedia && initialUrl)) {
+        setActiveTool("photos");
+        useEditorStore.getState().setEditorMode("photo");
+        setIsLeftPanelOpen(true);
+      } else if (restoredProject) {
+        const restoredMode = useEditorStore.getState().editorMode;
+        setActiveTool(restoredMode === "video" ? "video" : "photos");
+        setIsLeftPanelOpen(true);
+      } else if (initialType === "video" || savedMode === "video") {
+        setActiveTool("video");
+        useEditorStore.getState().setEditorMode("video");
+        setIsLeftPanelOpen(true);
+      } else if (
+        initialType === "image" ||
+        savedMode === "photo"
+      ) {
+        setActiveTool("photos");
+        useEditorStore.getState().setEditorMode("photo");
+        setIsLeftPanelOpen(true);
+      }
+
+      setIsEditorModeRestored(true);
+    };
+    void restore();
+    return () => {
+      cancelled = true;
+    };
   }, [
     hasPendingImg,
     hasPendingVideo,
     initialType,
     initialUrl,
   ]);
+
+  useEffect(() => {
+    if (!isEditorModeRestored) return;
+    return startEditorAutosave();
+  }, [isEditorModeRestored]);
 
   useEffect(() => {
     if (!isEditorModeRestored) return;
@@ -274,6 +310,22 @@ function EditorContent() {
 
       const dataUrl = event.data.dataUrl as string;
       const mediaType = msgType === 'PIXIZEN_VIDEO' ? 'video' : 'image';
+      let persistentUrl = dataUrl;
+      if (dataUrl.startsWith("data:")) {
+        try {
+          persistentUrl = (
+            await uploadEditorDataUrl(
+              dataUrl,
+              mediaType,
+              `generated-${mediaType}`,
+              getEditorProjectId(),
+            )
+          ).url;
+        } catch (error) {
+          console.error("[EDITOR_PENDING_UPLOAD]", error);
+          return;
+        }
+      }
       
       if (mediaType === 'video') {
         setActiveTool("video");
@@ -295,7 +347,7 @@ function EditorContent() {
           if (targetCanvas) {
             clearInterval(interval);
             await addMediaFromUrl(
-              dataUrl,
+              persistentUrl,
               currentState,
               mediaType,
               false,

@@ -17,7 +17,11 @@ import {
   addEmojiToCanvas,
   addShapeToCanvas,
 } from "./tools/shapes-tool";
-import { addMediaFromUrl, PHOTO_DRAG_MIME_TYPE } from "@/lib/editor-utils";
+import {
+  addMediaFromUrl,
+  applyPersistedLayerState,
+  PHOTO_DRAG_MIME_TYPE,
+} from "@/lib/editor-utils";
 
 interface PageCanvasProps {
   pageId: string;
@@ -161,28 +165,27 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     const handleKeyDown = (e: KeyboardEvent) => {
       const isCmd = e.metaKey || e.ctrlKey;
       const isShift = e.shiftKey;
+      const target = e.target as HTMLElement;
+      const isTyping =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable;
 
-      if (isCmd && e.key === "z") {
+      if (isTyping) return;
+
+      if (isCmd && e.key.toLowerCase() === "z") {
         e.preventDefault();
         if (isShift) {
           redo();
         } else {
           undo();
         }
-      } else if (isCmd && e.key === "y") {
+      } else if (isCmd && e.key.toLowerCase() === "y") {
         e.preventDefault();
         redo();
       } else if (
         ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)
       ) {
-        const target = e.target as HTMLElement;
-        if (
-          target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable
-        )
-          return;
-
         const canvas = useEditorStore.getState().canvas.fabricCanvas;
         const activeObjects = canvas?.getActiveObjects() || [];
         if (!canvas || activeObjects.length === 0) return;
@@ -211,14 +214,6 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         saveToHistory(JSON.stringify(canvas.toJSON()));
       } else if (e.key === "Delete" || e.key === "Backspace") {
         // Don't delete if editing text or typing in input
-        const target = e.target as HTMLElement;
-        if (
-          target.tagName === "INPUT" ||
-          target.tagName === "TEXTAREA" ||
-          target.isContentEditable
-        )
-          return;
-
         const canvas = useEditorStore.getState().canvas.fabricCanvas;
         if (!canvas) return;
 
@@ -308,7 +303,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
           if (canvas.getObjects().some((o: any) => o.name === layer.objectId)) continue;
 
           if ((layer.type === 'image' || layer.type === 'sticker' || layer.type === "video") && layer.data?.url) {
-            await addMediaFromUrl(
+            const objectId = await addMediaFromUrl(
               layer.data.url,
               useEditorStore.getState(),
               layer.type as any,
@@ -317,8 +312,18 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
               layer.data?.name || layer.name,
               canvas,
             );
+            const object = canvas
+              .getObjects()
+              .find((candidate: any) => candidate.name === objectId);
+            if (object) applyPersistedLayerState(object, layer);
           } else if (layer.type === 'text' && layer.objectId) {
-            addTextToCanvas(layer.data?.content || layer.name, layer.data || {}, canvas, layer.objectId);
+            const object = addTextToCanvas(
+              layer.data?.content || layer.name,
+              layer.data || {},
+              canvas,
+              layer.objectId,
+            );
+            applyPersistedLayerState(object, layer);
           }
         }
         canvas.renderAll();

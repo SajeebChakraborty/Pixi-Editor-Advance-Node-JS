@@ -230,6 +230,7 @@ export interface EditorState {
   redo: () => void
   canUndo: () => boolean
   canRedo: () => boolean
+  restoreProjectState: (project: PersistedEditorState) => void
 
   // Reset
   resetCanvas: () => void
@@ -250,6 +251,16 @@ export interface EditorState {
     universe?: EditorMode,
   ) => void
   removeRecentAsset: (url: string, universe?: EditorMode) => void
+}
+
+export interface PersistedEditorState {
+  version: 1
+  editorMode: EditorMode
+  photoCanvasState: Omit<CanvasState, 'fabricCanvas'>
+  videoCanvasState: Omit<CanvasState, 'fabricCanvas'>
+  videoState: VideoState
+  photoRecentAssets: Asset[]
+  videoRecentAssets: Asset[]
 }
 
 const firstPageId = `photo-page-${Date.now()}`
@@ -327,6 +338,27 @@ const shouldSkipLayerIntermediateHistory = (
   }
 
   return false
+}
+
+const hasManagedCanvasContent = (snapshot: CanvasHistorySnapshot) =>
+  snapshot.pages.some((page) => page.layers.length > 0) ||
+  ((snapshot.fabric?.objects || []) as any[]).some(
+    (object) => !object?.excludeFromExport,
+  )
+
+const isValidHistorySnapshot = (snapshot: CanvasHistorySnapshot | null) => {
+  if (!snapshot || !snapshot.fabric || !Array.isArray(snapshot.fabric.objects)) {
+    return false
+  }
+  if (snapshot.pages.length === 0) return true
+
+  const activePage =
+    snapshot.pages.find((page) => page.id === snapshot.activePageId) ||
+    snapshot.pages[0]
+  return !shouldSkipLayerIntermediateHistory(
+    snapshot.fabric,
+    activePage?.layers || [],
+  )
 }
 
 const parseHistorySnapshot = (snapshot: string): CanvasHistorySnapshot | null => {
@@ -1235,7 +1267,18 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         return state
       }
 
-      const newHistory = state.canvas.history.slice(0, state.canvas.historyIndex + 1)
+      let newHistory = state.canvas.history.slice(0, state.canvas.historyIndex + 1)
+      const onlyExistingSnapshot =
+        newHistory.length === 1 ? parseHistorySnapshot(newHistory[0]) : null
+      if (
+        onlyExistingSnapshot &&
+        !hasManagedCanvasContent(onlyExistingSnapshot) &&
+        hasManagedCanvasContent(historySnapshot)
+      ) {
+        // The first uploaded photo/video is the editable baseline. Keeping the
+        // pre-upload empty canvas makes the first Ctrl+Z erase the project.
+        newHistory = []
+      }
       newHistory.push(serializedSnapshot)
       
       // Limit history to 50 steps
@@ -1257,28 +1300,37 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { historyIndex, history, fabricCanvas } = get().canvas
     if (historyIndex > 0) {
       const prevSnapshot = parseHistorySnapshot(history[historyIndex - 1])
-      if (fabricCanvas && prevSnapshot) {
-        // We use a flag to prevent saving back to history while loading
-        ;(fabricCanvas as any).isHistoryLoading = true
-        disposeVideoObjects(fabricCanvas)
-        fabricCanvas.loadFromJSON(prevSnapshot.fabric).then(() => {
+      if (!fabricCanvas || !isValidHistorySnapshot(prevSnapshot)) return
+
+      ;(fabricCanvas as any).isHistoryLoading = true
+      disposeVideoObjects(fabricCanvas)
+      fabricCanvas
+        .loadFromJSON(prevSnapshot!.fabric)
+        .then(() => {
           fabricCanvas.discardActiveObject()
           fabricCanvas.renderAll()
+          set((state) => ({
+            canvas: {
+              ...state.canvas,
+              pages: prevSnapshot!.pages.length
+                ? clonePages(prevSnapshot!.pages)
+                : state.canvas.pages,
+              activePageId:
+                prevSnapshot!.activePageId || state.canvas.activePageId,
+              selectedLayerId: prevSnapshot!.selectedLayerId || null,
+              width: prevSnapshot!.width || state.canvas.width,
+              height: prevSnapshot!.height || state.canvas.height,
+              historyIndex: Math.max(0, state.canvas.historyIndex - 1),
+            },
+          }))
+          get().recalculateTotalDuration()
+        })
+        .catch((error) => {
+          console.error("[EDITOR_HISTORY] Undo restore failed:", error)
+        })
+        .finally(() => {
           ;(fabricCanvas as any).isHistoryLoading = false
         })
-      }
-      set((state) => ({
-        canvas: {
-          ...state.canvas,
-          pages: prevSnapshot?.pages.length ? clonePages(prevSnapshot.pages) : state.canvas.pages,
-          activePageId: prevSnapshot?.activePageId || state.canvas.activePageId,
-          selectedLayerId: prevSnapshot?.selectedLayerId || null,
-          width: prevSnapshot?.width || state.canvas.width,
-          height: prevSnapshot?.height || state.canvas.height,
-          historyIndex: state.canvas.historyIndex - 1,
-        },
-      }))
-      setTimeout(() => get().recalculateTotalDuration(), 0)
     }
   },
 
@@ -1286,32 +1338,76 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const { historyIndex, history, fabricCanvas } = get().canvas
     if (historyIndex < history.length - 1) {
       const nextSnapshot = parseHistorySnapshot(history[historyIndex + 1])
-      if (fabricCanvas && nextSnapshot) {
-        ;(fabricCanvas as any).isHistoryLoading = true
-        disposeVideoObjects(fabricCanvas)
-        fabricCanvas.loadFromJSON(nextSnapshot.fabric).then(() => {
+      if (!fabricCanvas || !isValidHistorySnapshot(nextSnapshot)) return
+
+      ;(fabricCanvas as any).isHistoryLoading = true
+      disposeVideoObjects(fabricCanvas)
+      fabricCanvas
+        .loadFromJSON(nextSnapshot!.fabric)
+        .then(() => {
           fabricCanvas.discardActiveObject()
           fabricCanvas.renderAll()
+          set((state) => ({
+            canvas: {
+              ...state.canvas,
+              pages: nextSnapshot!.pages.length
+                ? clonePages(nextSnapshot!.pages)
+                : state.canvas.pages,
+              activePageId:
+                nextSnapshot!.activePageId || state.canvas.activePageId,
+              selectedLayerId: nextSnapshot!.selectedLayerId || null,
+              width: nextSnapshot!.width || state.canvas.width,
+              height: nextSnapshot!.height || state.canvas.height,
+              historyIndex: Math.min(
+                state.canvas.history.length - 1,
+                state.canvas.historyIndex + 1,
+              ),
+            },
+          }))
+          get().recalculateTotalDuration()
+        })
+        .catch((error) => {
+          console.error("[EDITOR_HISTORY] Redo restore failed:", error)
+        })
+        .finally(() => {
           ;(fabricCanvas as any).isHistoryLoading = false
         })
-      }
-      set((state) => ({
-        canvas: {
-          ...state.canvas,
-          pages: nextSnapshot?.pages.length ? clonePages(nextSnapshot.pages) : state.canvas.pages,
-          activePageId: nextSnapshot?.activePageId || state.canvas.activePageId,
-          selectedLayerId: nextSnapshot?.selectedLayerId || null,
-          width: nextSnapshot?.width || state.canvas.width,
-          height: nextSnapshot?.height || state.canvas.height,
-          historyIndex: state.canvas.historyIndex + 1,
-        },
-      }))
-      setTimeout(() => get().recalculateTotalDuration(), 0)
     }
   },
 
   canUndo: () => get().canvas.historyIndex > 0,
   canRedo: () => get().canvas.historyIndex < get().canvas.history.length - 1,
+
+  restoreProjectState: (project) =>
+    set((state) => {
+      const photoCanvasState = {
+        ...project.photoCanvasState,
+        pages: clonePages(project.photoCanvasState.pages),
+        fabricCanvas: null,
+      }
+      const videoCanvasState = {
+        ...project.videoCanvasState,
+        pages: clonePages(project.videoCanvasState.pages),
+        fabricCanvas: null,
+      }
+      const canvas =
+        project.editorMode === "video" ? videoCanvasState : photoCanvasState
+
+      return {
+        editorMode: project.editorMode,
+        canvas,
+        photoCanvasState,
+        videoCanvasState,
+        videoState: {
+          ...project.videoState,
+          isPlaying: false,
+        },
+        photoRecentAssets: project.photoRecentAssets || [],
+        videoRecentAssets: project.videoRecentAssets || [],
+        videoEditorOpen: project.editorMode === "video",
+        videoFabricCanvas: state.videoFabricCanvas,
+      }
+    }),
 
   resetCanvas: () =>
     set((state) => {

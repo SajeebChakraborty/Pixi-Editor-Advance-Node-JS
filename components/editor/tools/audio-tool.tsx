@@ -17,6 +17,8 @@ import { Slider } from "@/components/ui/slider";
 import { useEditorStore } from "@/lib/store";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { uploadEditorAsset } from "@/lib/editor-assets";
+import { getEditorProjectId } from "@/lib/project-persistence";
 
 type MusicItem = {
   title: string;
@@ -124,9 +126,22 @@ export function AudioTool() {
       return;
     }
 
-    const url = URL.createObjectURL(file);
-    addRecentAsset({ url, name: file.name, type: "audio" }, "video");
-    await replaceBackgroundMusic({ title: file.name, url });
+    const toastId = toast.loading("Uploading audio...");
+    try {
+      const { url } = await uploadEditorAsset(
+        file,
+        "audio",
+        getEditorProjectId(),
+      );
+      addRecentAsset({ url, name: file.name, type: "audio" }, "video");
+      await replaceBackgroundMusic({ title: file.name, url });
+      toast.dismiss(toastId);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Audio upload failed",
+        { id: toastId },
+      );
+    }
   };
 
   const handleUploadAudio = async (

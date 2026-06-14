@@ -9,6 +9,8 @@ import { toast } from "sonner";
 
 import { addMediaFromUrl } from "@/lib/editor-utils";
 import { AssetService } from "@/lib/asset-service";
+import { uploadEditorAsset } from "@/lib/editor-assets";
+import { getEditorProjectId } from "@/lib/project-persistence";
 
 export function VideoTool() {
   const searchParams = useSearchParams();
@@ -145,18 +147,29 @@ export function VideoTool() {
     }
 
     setLoading(true);
-    const toastId = toast.loading("Processing video...");
-    // Use blob URL for local videos to avoid massive data URLs and metadata load failures.
-    const localUrl = URL.createObjectURL(file);
-    toast.success("Video loaded successfully", { id: toastId });
-    const localVideo = {
-      id: Date.now().toString(),
-      name: file.name,
-      url: localUrl,
-    };
-    setLibraryVideos((prev) => [localVideo, ...prev]);
-    await handleAddVideoToCanvas(localUrl);
-    setLoading(false);
+    const toastId = toast.loading("Uploading video...");
+    try {
+      const { url } = await uploadEditorAsset(
+        file,
+        "video",
+        getEditorProjectId(),
+      );
+      toast.success("Video uploaded successfully", { id: toastId });
+      const localVideo = {
+        id: Date.now().toString(),
+        name: file.name,
+        url,
+      };
+      setLibraryVideos((prev) => [localVideo, ...prev]);
+      await handleAddVideoToCanvas(url);
+    } catch (error) {
+      toast.error(
+        error instanceof Error ? error.message : "Video upload failed",
+        { id: toastId },
+      );
+    } finally {
+      setLoading(false);
+    }
   };
 
   const processFile = async (file: File) => {
@@ -167,37 +180,48 @@ export function VideoTool() {
     if (isImage) {
       setLoading(true);
       const toastId = toast.loading("Adding image overlay...");
-      const localUrl = URL.createObjectURL(file);
-      const objectId = await addMediaFromUrl(
-        localUrl,
-        useEditorStore.getState(),
-        "image",
-        false,
-        undefined,
-        file.name,
-        videoFabricCanvas,
-      );
-      setLoading(false);
+      try {
+        const { url } = await uploadEditorAsset(
+          file,
+          "image",
+          getEditorProjectId(),
+        );
+        const objectId = await addMediaFromUrl(
+          url,
+          useEditorStore.getState(),
+          "image",
+          false,
+          undefined,
+          file.name,
+          videoFabricCanvas,
+        );
 
-      if (objectId) {
-        setLibraryVideos((previous) => [
-          {
-            id: `image_${Date.now()}`,
-            name: file.name,
-            url: localUrl,
+        if (objectId) {
+          setLibraryVideos((previous) => [
+            {
+              id: `image_${Date.now()}`,
+              name: file.name,
+              url,
+              type: "image",
+            },
+            ...previous,
+          ]);
+          useEditorStore.getState().addRecentAsset({
             type: "image",
-          },
-          ...previous,
-        ]);
-        useEditorStore.getState().addRecentAsset({
-          type: "image",
-          url: localUrl,
-          name: file.name,
-        }, "video");
-        toast.success("Image overlay added to video.", { id: toastId });
-      } else {
-        URL.revokeObjectURL(localUrl);
-        toast.error("Could not add image overlay.", { id: toastId });
+            url,
+            name: file.name,
+          }, "video");
+          toast.success("Image overlay added to video.", { id: toastId });
+        } else {
+          toast.error("Could not add image overlay.", { id: toastId });
+        }
+      } catch (error) {
+        toast.error(
+          error instanceof Error ? error.message : "Image upload failed",
+          { id: toastId },
+        );
+      } finally {
+        setLoading(false);
       }
       return;
     }
