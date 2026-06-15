@@ -163,29 +163,19 @@ export const addMediaFromUrl = async (
 
     const loadVideoMetadata = (sourceUrl: string) =>
       new Promise<void>((resolve, reject) => {
-        const timeoutId = window.setTimeout(() => reject(new Error("Timeout while loading metadata")), 25000);
-
         const cleanup = () => {
           window.clearTimeout(timeoutId);
-          videoEl.onloadedmetadata = null;
-          videoEl.onloadeddata = null;
-          videoEl.oncanplay = null;
-          videoEl.onerror = null;
+          videoEl.removeEventListener("loadedmetadata", handleReady);
+          videoEl.removeEventListener("loadeddata", handleReady);
+          videoEl.removeEventListener("canplay", handleReady);
+          videoEl.removeEventListener("error", handleError);
         };
 
-        videoEl.onloadedmetadata = () => {
+        const handleReady = () => {
           cleanup();
           resolve();
         };
-        videoEl.oncanplay = () => {
-          cleanup();
-          resolve();
-        };
-        videoEl.onloadeddata = () => {
-          cleanup();
-          resolve();
-        };
-        videoEl.onerror = () => {
+        const handleError = () => {
           cleanup();
           const mediaError = videoEl.error;
           const errorCode = mediaError?.code;
@@ -197,10 +187,27 @@ export const addMediaFromUrl = async (
           };
           reject(new Error(errorMap[errorCode || 0] || `Failed to load video source: ${sourceUrl}`));
         };
+        const timeoutId = window.setTimeout(() => {
+          cleanup();
+          reject(new Error("The video server did not return readable metadata in time"));
+        }, 25000);
 
-        videoEl.crossOrigin = sourceUrl.startsWith("blob:") || sourceUrl.startsWith("data:") ? null : "anonymous";
+        videoEl.addEventListener("loadedmetadata", handleReady);
+        videoEl.addEventListener("loadeddata", handleReady);
+        videoEl.addEventListener("canplay", handleReady);
+        videoEl.addEventListener("error", handleError);
+
+        if (/^https?:\/\//i.test(sourceUrl)) {
+          videoEl.crossOrigin = "anonymous";
+        } else {
+          videoEl.removeAttribute("crossorigin");
+        }
         videoEl.src = sourceUrl;
         videoEl.load();
+
+        if (videoEl.readyState >= HTMLMediaElement.HAVE_METADATA) {
+          handleReady();
+        }
       });
 
     const waitForVideoDimensions = () =>
@@ -280,7 +287,7 @@ export const addMediaFromUrl = async (
         };
       });
     } catch (e) {
-       console.error(e);
+       console.warn("[VIDEO_METADATA]", e);
        if (!silent) {
         const message = e instanceof Error ? e.message : "Video load failed";
         toast.error(`Video load failed: ${message}`);

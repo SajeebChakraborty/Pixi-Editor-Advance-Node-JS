@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Storage } from "@/lib/storage-s3";
+import { resolveMediaContentType } from "@/lib/media-content-type";
 
 export const runtime = "nodejs";
 
@@ -21,12 +22,13 @@ export async function GET(request: NextRequest) {
   return new NextResponse(file.body, {
     status: range && file.contentRange ? 206 : 200,
     headers: {
-      "Content-Type": file.contentType || "application/octet-stream",
+      "Content-Type": resolveMediaContentType(key, file.contentType),
       ...(file.contentLength
         ? { "Content-Length": String(file.contentLength) }
         : {}),
       ...(file.contentRange ? { "Content-Range": file.contentRange } : {}),
       "Accept-Ranges": file.acceptRanges || "bytes",
+      "Content-Disposition": "inline",
       "Cache-Control": "public, max-age=31536000, immutable",
     },
   });

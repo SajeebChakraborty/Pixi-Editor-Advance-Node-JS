@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { S3Storage } from "@/lib/storage-s3";
+import { resolveMediaContentType } from "@/lib/media-content-type";
 
 export const runtime = "nodejs";
 
@@ -31,10 +32,11 @@ export async function POST(request: Request) {
       .toString(36)
       .slice(2, 10)}-${sanitizeFileName(file.name)}.${extension}`;
     const buffer = Buffer.from(await file.arrayBuffer());
+    const contentType = resolveMediaContentType(file.name, file.type);
     const storageUrl = await S3Storage.uploadFile(
       buffer,
       key,
-      file.type || "application/octet-stream",
+      contentType,
     );
 
     if (!storageUrl) {
