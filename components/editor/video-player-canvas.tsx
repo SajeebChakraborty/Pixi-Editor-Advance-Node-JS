@@ -619,28 +619,24 @@ export function VideoPlayerCanvas() {
     const toastId = toast.loading("Rendering composition...");
     try {
       const { exportVideo } = await import("@/lib/video-renderer");
+      const { uploadRenderedVideo } = await import("@/lib/rendered-video-upload");
       const rendered = await exportVideo("mp4");
-      const formData = new FormData();
-      formData.append(
-        "file",
-        new File([rendered.blob], `composition.${rendered.extension}`, {
-          type: rendered.mimeType,
-        }),
+      const result = await uploadRenderedVideo(
+        rendered.blob,
+        rendered.extension,
+        rendered.mimeType || rendered.blob.type || (rendered.extension === "mp4" ? "video/mp4" : "video/webm"),
       );
-      formData.append("extension", "mp4");
-      const response = await fetch("/api/upload-rendered-video", {
-        method: "POST",
-        body: formData,
-      });
-      const result = await response.json();
-      if (!response.ok || !result?.key) {
-        throw new Error(result?.error || "MP4 conversion failed");
-      }
+      const fileName = `pixigen-video.${result.extension || rendered.extension}`;
       setDownloadUrl(
-        `/api/download?key=${encodeURIComponent(result.key)}&filename=${encodeURIComponent("pixigen-video.mp4")}`,
+        `/api/download?key=${encodeURIComponent(result.key)}&filename=${encodeURIComponent(fileName)}`,
       );
       setIsExported(true);
-      toast.success("MP4 is ready.", { id: toastId });
+      toast.success(
+        (result.extension || rendered.extension) === "mp4"
+          ? "MP4 is ready."
+          : "WebM is ready.",
+        { id: toastId },
+      );
     } catch (error) {
       toast.error(
         error instanceof Error ? error.message : "Export failed",

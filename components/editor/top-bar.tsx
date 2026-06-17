@@ -102,11 +102,7 @@ export function TopBar() {
 
   const handleExportVideo = async (preferredFormat: "mp4" | "webm" = "mp4") => {
     setExporting(true);
-    const toastId = toast.loading(
-      preferredFormat === "mp4"
-        ? "Recording timeline… converting to MP4 on server, then download."
-        : "Recording timeline… uploading, then download.",
-    );
+    const toastId = toast.loading("Recording timeline… uploading, then download.");
 
     try {
       const { exportVideo } = await import("@/lib/video-renderer");
@@ -114,38 +110,14 @@ export function TopBar() {
       if (!blob || blob.size < 1024) {
         throw new Error("Rendered video is empty. Please ensure timeline has a valid video segment.");
       }
-      // Client MediaRecorder is usually WebM; MP4 is produced server-side via FFmpeg when you pick MP4.
 
-      const formData = new FormData();
-      formData.append(
-        "file",
-        new File([blob], `rendered.${extension}`, { type: mimeType || blob.type || "video/webm" }),
+      const { uploadRenderedVideo } = await import("@/lib/rendered-video-upload");
+      const uploadResult = await uploadRenderedVideo(
+        blob,
+        extension,
+        mimeType || blob.type || (extension === "mp4" ? "video/mp4" : "video/webm"),
       );
-      formData.append("extension", preferredFormat);
-      const uploadRes = await fetch("/api/upload-rendered-video", {
-        method: "POST",
-        body: formData,
-      });
-      const uploadBody = await uploadRes.text();
-      let uploadResult: {
-        success?: boolean;
-        url?: string;
-        key?: string;
-        extension?: string;
-        error?: string;
-      };
-      try {
-        uploadResult = JSON.parse(uploadBody) as typeof uploadResult;
-      } catch {
-        throw new Error(
-          uploadBody.trim().slice(0, 280) || `Upload failed (HTTP ${uploadRes.status})`,
-        );
-      }
-      if (!uploadRes.ok || !uploadResult?.success || !uploadResult?.key) {
-        throw new Error(uploadResult?.error || `Upload failed (HTTP ${uploadRes.status})`);
-      }
-
-      const fileExt = (uploadResult.extension || extension) as "mp4" | "webm";
+      const fileExt = uploadResult.extension || extension;
       const fileName = `pixizen-video-${Date.now()}.${fileExt}`;
       const downloadUrl = `/api/download?key=${encodeURIComponent(uploadResult.key)}&filename=${encodeURIComponent(fileName)}`;
       const link = document.createElement("a");
@@ -156,7 +128,7 @@ export function TopBar() {
       toast.success(
         fileExt === "mp4"
           ? "MP4 ready — download started."
-          : "WebM export complete — download started.",
+          : "WebM ready — download started.",
         { id: toastId },
       );
     } catch (error) {
@@ -342,7 +314,7 @@ export function TopBar() {
           <div className="flex flex-col">
             <span className="font-bold text-xs">MP4 Video</span>
             <span className="text-[10px] text-gray-500">
-              Render -&gt; AWS Upload -&gt; Download
+              Render -&gt; Direct Upload -&gt; Download
             </span>
           </div>
         </DropdownMenuItem>
