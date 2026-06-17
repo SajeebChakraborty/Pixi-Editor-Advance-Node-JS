@@ -1,6 +1,22 @@
 import type { Asset } from "./store";
 import { supabase } from "./supabase";
 
+const parseUploadResponse = async (response: Response) => {
+  const contentType = response.headers.get("content-type") || "";
+  if (contentType.includes("application/json")) {
+    return response.json();
+  }
+
+  const body = await response.text();
+  return {
+    success: false,
+    error:
+      response.status === 413
+        ? "Upload is too large for the production server. Please use a smaller file."
+        : body.trim() || `Upload failed with status ${response.status}`,
+  };
+};
+
 export const uploadEditorAsset = async (
   file: File,
   type: Asset["type"],
@@ -15,7 +31,7 @@ export const uploadEditorAsset = async (
     method: "POST",
     body: formData,
   });
-  const result = await response.json();
+  const result = await parseUploadResponse(response);
   if (!response.ok || !result?.url) {
     throw new Error(result?.error || "Asset upload failed");
   }

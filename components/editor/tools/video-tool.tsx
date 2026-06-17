@@ -12,6 +12,8 @@ import { AssetService } from "@/lib/asset-service";
 import { uploadEditorAsset } from "@/lib/editor-assets";
 import { getEditorProjectId } from "@/lib/project-persistence";
 
+const MAX_VIDEO_UPLOAD_BYTES = 50 * 1024 * 1024;
+
 export function VideoTool() {
   const searchParams = useSearchParams();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -118,6 +120,11 @@ export function VideoTool() {
   };
 
   const processVideoFile = async (file: File) => {
+    if (file.size > MAX_VIDEO_UPLOAD_BYTES) {
+      toast.error("Video is too large. Please upload a file under 50MB.");
+      return;
+    }
+
     const allowedMime = [
       "video/mp4",
       "video/webm",
