@@ -50,7 +50,6 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     deletePage,
     addPage,
     renamePage,
-    setPageArtboardPosition,
     undo,
     redo,
     saveToHistory,
@@ -499,200 +498,13 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       saveToHistory(JSON.stringify(canvas.toJSON()));
     };
 
-    let resizingImage: fabric.FabricObject | null = null;
-    let movingImage: fabric.FabricObject | null = null;
     const triggerModifiedSave = (event?: any) => {
-      if (
-        (resizingImage && event?.target === resizingImage) ||
-        (movingImage && event?.target === movingImage)
-      ) {
-        return;
-      }
       triggerSave(event);
     };
 
     canvas.on("object:added", triggerSave);
     canvas.on("object:modified", triggerModifiedSave);
     canvas.on("object:removed", triggerSave);
-
-    let artboardResizeFrame: number | null = null;
-    let moveStartArtboard = { x: artboardX, y: artboardY };
-    const clampArtboardPosition = (value: number) =>
-      Math.max(-pasteboardMargin, Math.min(pasteboardMargin, value));
-    const syncPhotoArtboardToImage = (
-      target: fabric.FabricObject | undefined,
-      alignImage = false,
-    ) => {
-      if (!target || useEditorStore.getState().editorMode !== "photo") return;
-
-      const state = useEditorStore.getState();
-      const imageLayers = state
-        .getLayers()
-        .filter((item) => item.type === "image");
-      if (imageLayers[0]?.objectId !== (target as any).name) return;
-
-      const nextWidth = Math.max(1, Math.round(target.getScaledWidth()));
-      const nextHeight = Math.max(1, Math.round(target.getScaledHeight()));
-
-      if (alignImage) {
-        target.set({
-          left: 0,
-          top: 0,
-          originX: "left",
-          originY: "top",
-        });
-        target.setCoords();
-      }
-
-      const activePage = state.canvas.pages.find(
-        (candidate) => candidate.id === state.canvas.activePageId,
-      );
-      if (
-        activePage?.width !== nextWidth ||
-        activePage?.height !== nextHeight
-      ) {
-        state.setCanvas({ width: nextWidth, height: nextHeight });
-      }
-    };
-
-    const handlePhotoImageScaling = (event: any) => {
-      resizingImage = event?.target || null;
-      (canvas as any).isArtboardResizing = Boolean(resizingImage);
-      if (artboardResizeFrame !== null) {
-        cancelAnimationFrame(artboardResizeFrame);
-      }
-      artboardResizeFrame = requestAnimationFrame(() => {
-        artboardResizeFrame = null;
-        syncPhotoArtboardToImage(event?.target);
-      });
-    };
-
-    const handlePhotoImageResizeComplete = (event: any) => {
-      if (!resizingImage || event?.target !== resizingImage) return;
-      if (artboardResizeFrame !== null) {
-        cancelAnimationFrame(artboardResizeFrame);
-        artboardResizeFrame = null;
-      }
-      syncPhotoArtboardToImage(event?.target, true);
-      resizingImage = null;
-      (canvas as any).isArtboardResizing = false;
-      canvas.requestRenderAll();
-      triggerSave(event);
-    };
-
-    canvas.on("object:scaling", handlePhotoImageScaling);
-    canvas.on("object:modified", handlePhotoImageResizeComplete);
-
-    const getPhotoImageLayer = (target?: fabric.FabricObject) => {
-      if (!target || useEditorStore.getState().editorMode !== "photo") {
-        return null;
-      }
-      return (
-        useEditorStore
-          .getState()
-          .getLayers()
-          .find((item) => item.objectId === (target as any).name) || null
-      );
-    };
-
-    const isPrimaryPhotoImage = (target?: fabric.FabricObject) => {
-      if (getPhotoImageLayer(target)?.type !== "image" || !target) return false;
-      return (
-        useEditorStore
-          .getState()
-          .getLayers()
-          .filter((item) => item.type === "image")[0]?.objectId ===
-        (target as any).name
-      );
-    };
-
-    const handlePhotoImageMoving = (event: any) => {
-      const target = event?.target as fabric.FabricObject | undefined;
-      if (!isPrimaryPhotoImage(target) || !target) return;
-
-      if (movingImage !== target) {
-        movingImage = target;
-        const currentPage = useEditorStore
-          .getState()
-          .canvas.pages.find((candidate) => candidate.id === pageId);
-        moveStartArtboard = {
-          x: currentPage?.artboardX ?? 0,
-          y: currentPage?.artboardY ?? 0,
-        };
-      }
-
-      const nextX = clampArtboardPosition(
-        moveStartArtboard.x + Number(target.left || 0),
-      );
-      const nextY = clampArtboardPosition(
-        moveStartArtboard.y + Number(target.top || 0),
-      );
-      const liveZoom = canvas.getZoom() || 1;
-      const artboard = containerRef.current?.querySelector<HTMLElement>(
-        `[data-artboard-for="${pageId}"]`,
-      );
-      if (artboard) {
-        artboard.style.left = `${(pasteboardMargin + nextX) * liveZoom}px`;
-        artboard.style.top = `${(pasteboardMargin + nextY) * liveZoom}px`;
-      }
-      const controls = containerRef.current?.querySelector<HTMLElement>(
-        `[data-artboard-controls-for="${pageId}"]`,
-      );
-      if (controls) {
-        controls.style.left = `${
-          (pasteboardMargin + nextX + pageWidth) * liveZoom + 14
-        }px`;
-        controls.style.top = `${(pasteboardMargin + nextY) * liveZoom}px`;
-      }
-      const label = containerRef.current?.parentElement?.querySelector<HTMLElement>(
-        `[data-artboard-label-for="${pageId}"]`,
-      );
-      if (label) {
-        label.style.marginTop = `${
-          -pasteboardMargin * liveZoom + 24 + nextY * liveZoom
-        }px`;
-        label.style.transform = `translateX(${nextX * liveZoom}px)`;
-      }
-    };
-
-    const handlePhotoImageMoveComplete = (event: any) => {
-      const target = event?.target as fabric.FabricObject | undefined;
-      if (!target || movingImage !== target) return;
-
-      const nextX = clampArtboardPosition(
-        moveStartArtboard.x + Number(target.left || 0),
-      );
-      const nextY = clampArtboardPosition(
-        moveStartArtboard.y + Number(target.top || 0),
-      );
-      const liveZoom = canvas.getZoom() || 1;
-      const currentPage = useEditorStore
-        .getState()
-        .canvas.pages.find((candidate) => candidate.id === pageId);
-      target.set({ left: 0, top: 0, originX: "left", originY: "top" });
-      target.setCoords();
-      canvas.setViewportTransform([
-        liveZoom,
-        0,
-        0,
-        liveZoom,
-        (pasteboardMargin + nextX) * liveZoom,
-        (pasteboardMargin + nextY) * liveZoom,
-      ]);
-      (canvas as any).artboardExportBounds = {
-        left: (pasteboardMargin + nextX) * liveZoom,
-        top: (pasteboardMargin + nextY) * liveZoom,
-        width: Number(currentPage?.width || pageWidth) * liveZoom,
-        height: Number(currentPage?.height || pageHeight) * liveZoom,
-      };
-      setPageArtboardPosition(pageId, nextX, nextY);
-      movingImage = null;
-      canvas.requestRenderAll();
-      triggerSave(event);
-    };
-
-    canvas.on("object:moving", handlePhotoImageMoving);
-    canvas.on("object:modified", handlePhotoImageMoveComplete);
 
     canvas.on("path:created", (event: any) => {
       const path = event?.path as any;
@@ -1061,15 +873,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     return () => {
       cancelAnimationFrame(registrationFrame);
-      if (artboardResizeFrame !== null) {
-        cancelAnimationFrame(artboardResizeFrame);
-      }
       window.removeEventListener("editor:drawing-undo", handleDrawingUndo);
       window.removeEventListener("editor:drawing-redo", handleDrawingRedo);
-      canvas.off("object:scaling", handlePhotoImageScaling);
-      canvas.off("object:modified", handlePhotoImageResizeComplete);
-      canvas.off("object:moving", handlePhotoImageMoving);
-      canvas.off("object:modified", handlePhotoImageMoveComplete);
       canvas.off("after:render", syncNativeVideoLayers);
       clearSmartGuides();
       if (useEditorStore.getState().canvas.fabricCanvas === canvas) {
@@ -1926,9 +1731,6 @@ export function Canvas() {
           entry.contentRect;
 
         if (containerWidth <= 0 || containerHeight <= 0) return;
-        const activeCanvas = useEditorStore.getState().canvas.fabricCanvas;
-        if ((activeCanvas as any)?.isArtboardResizing) return;
-
         // Gap calculations: Ensure a minimum 40px gap
         const padding = 120;
         const availableWidth = containerWidth - padding;

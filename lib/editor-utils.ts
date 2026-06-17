@@ -69,7 +69,7 @@ export const addMediaFromUrl = async (
   targetFabricCanvas?: fabric.Canvas | null,
   placement?: { left: number; top: number },
 ): Promise<string | null> => {
-  const { canvas, addLayer, setVideoState, addRecentAsset, videoState, setCanvas } = store;
+  const { canvas, addLayer, setVideoState, addRecentAsset, videoState } = store;
   const { width: storeWidth, height: storeHeight } = canvas || { width: 1280, height: 720 };
 
   const getLiveFabricCanvas = () => {
@@ -457,8 +457,8 @@ export const addMediaFromUrl = async (
         loadedEl = await loadImg(url);
       }
 
-      const imgWidth = loadedEl.naturalWidth;
-      const imgHeight = loadedEl.naturalHeight;
+      const imgWidth = Math.max(1, loadedEl.naturalWidth || loadedEl.width || 1);
+      const imgHeight = Math.max(1, loadedEl.naturalHeight || loadedEl.height || 1);
       const currentLayers = useEditorStore.getState().getLayers();
       const hasVideoLayer = currentLayers.some(
         (layer: any) => layer.type === "video",
@@ -466,47 +466,24 @@ export const addMediaFromUrl = async (
       const hasVisualLayer = currentLayers.some((layer: any) =>
         ["image", "video", "sticker"].includes(layer.type),
       );
-      const shouldAutoResizeCanvasToImage =
-        !silent &&
-        !hasVisualLayer &&
-        Number.isFinite(imgWidth) &&
-        Number.isFinite(imgHeight) &&
-        imgWidth > 0 &&
-        imgHeight > 0;
-
-      if (shouldAutoResizeCanvasToImage) {
-        setCanvas?.({ width: imgWidth, height: imgHeight });
-        // Let the canvas dimension effect finish before attaching the first
-        // image, then reacquire the active Fabric instance below.
-        await new Promise<void>((resolve) => {
-          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
-        });
-      }
-
-      const targetWidth = shouldAutoResizeCanvasToImage ? imgWidth : baseWidth;
-      const targetHeight = shouldAutoResizeCanvasToImage ? imgHeight : baseHeight;
-      const scale = shouldAutoResizeCanvasToImage
-        ? 1
-        : hasVisualLayer
+      const targetWidth = baseWidth;
+      const targetHeight = baseHeight;
+      const scale = hasVisualLayer || placement
           ? Math.min(
               1,
               (targetWidth * 0.45) / imgWidth,
               (targetHeight * 0.45) / imgHeight,
             ) || 1
-          : Math.max(targetWidth / imgWidth, targetHeight / imgHeight) || 1;
+          : Math.min(targetWidth / imgWidth, targetHeight / imgHeight) || 1;
       const objectId = forceObjectId || `img_${Date.now()}`;
       const renderedWidth = imgWidth * scale;
       const renderedHeight = imgHeight * scale;
       const imageLeft = placement
         ? placement.left - renderedWidth / 2
-        : shouldAutoResizeCanvasToImage
-          ? 0
-          : (targetWidth - renderedWidth) / 2;
+        : (targetWidth - renderedWidth) / 2;
       const imageTop = placement
         ? placement.top - renderedHeight / 2
-        : shouldAutoResizeCanvasToImage
-          ? 0
-          : (targetHeight - renderedHeight) / 2;
+        : (targetHeight - renderedHeight) / 2;
 
       const fabricImg = new fabric.FabricImage(loadedEl, {
         left: imageLeft,

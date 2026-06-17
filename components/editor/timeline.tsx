@@ -220,8 +220,14 @@ export function Timeline() {
     originalMediaStart: number;
   } | null>(null);
 
-  const duration = composition.duration || videoState.duration || 30;
-  const currentTime = videoState.currentTime;
+  const duration = Math.max(
+    0.1,
+    Number(composition.duration || videoState.duration || 30),
+  );
+  const currentTime = Math.min(
+    Math.max(0, Number(videoState.currentTime || 0)),
+    duration,
+  );
   const isPlaying = videoState.isPlaying;
 
   const tracksMap = new Map<number, typeof layers>();
@@ -244,7 +250,11 @@ export function Timeline() {
   const trackIndices = Array.from(tracksMap.keys()).sort((a, b) => a - b);
 
   const setCurrentTime = (time: number) => {
-    setVideoState({ currentTime: time });
+    if (!Number.isFinite(time)) return;
+    setVideoState({
+      currentTime: Math.min(Math.max(0, time), duration),
+      isPlaying: false,
+    });
   };
 
   const togglePlay = () => {

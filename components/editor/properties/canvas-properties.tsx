@@ -4,10 +4,9 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 
 export function CanvasProperties() {
-  const {
-    canvas: { width, height },
-    setCanvas,
-  } = useEditorStore();
+  const width = useEditorStore((state) => state.canvas.width);
+  const height = useEditorStore((state) => state.canvas.height);
+  const setCanvas = useEditorStore((state) => state.setCanvas);
 
   return (
     <div className="flex flex-col gap-6 p-4">

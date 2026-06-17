@@ -9,7 +9,6 @@ import {
 } from "lucide-react";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
-import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { Canvas as FabricCanvas } from "fabric";
 import {
@@ -528,8 +527,22 @@ export function VideoPlayerCanvas() {
     };
   }, []);
 
+  const safeDuration = Number.isFinite(duration) && duration > 0 ? duration : 0;
+  const safeCurrentTime =
+    safeDuration > 0
+      ? Math.min(Math.max(0, currentTime), safeDuration)
+      : 0;
+
   const handleSeek = (val: number[]) => {
-    setVideoState({ currentTime: val[0] });
+    const nextTime = Number(val[0]);
+    if (!Number.isFinite(nextTime)) return;
+    setVideoState({
+      currentTime:
+        safeDuration > 0
+          ? Math.min(Math.max(0, nextTime), safeDuration)
+          : 0,
+      isPlaying: false,
+    });
   };
 
   const togglePlayback = useCallback(() => {
@@ -719,21 +732,6 @@ export function VideoPlayerCanvas() {
                 className="absolute inset-0 pointer-events-auto"
               />
 
-              {/* Status Overlays */}
-              <div className="absolute top-4 left-4 flex gap-2 pointer-events-none">
-                <div className="bg-black/60 backdrop-blur-md border border-white/10 rounded-md px-2 py-1 flex items-center gap-2">
-                  <div
-                    className={cn(
-                      "w-1.5 h-1.5 rounded-full",
-                      isPlaying ? "bg-red-500 animate-pulse" : "bg-gray-500",
-                    )}
-                  />
-                  <span className="text-[9px] font-mono text-white/80 uppercase">
-                    Composition
-                  </span>
-                </div>
-              </div>
-
               {!isPlaying && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-[1px] cursor-pointer group-hover:bg-black/30 transition-all pointer-events-none">
                   <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center shadow-2xl scale-90 group-hover:scale-100 transition-transform">
@@ -780,16 +778,16 @@ export function VideoPlayerCanvas() {
 
         <div className="flex-1 flex gap-4 items-center">
           <span className="text-[10px] font-mono text-white/40">
-            {formatTime(currentTime)}
+            {formatTime(safeCurrentTime)}
           </span>
           <Slider
-            value={[currentTime]}
-            max={duration}
+            value={[safeCurrentTime]}
+            max={Math.max(0.1, safeDuration)}
             step={0.01}
             onValueChange={handleSeek}
           />
           <span className="text-[10px] font-mono text-white/40">
-            {formatTime(duration)}
+            {formatTime(safeDuration)}
           </span>
         </div>
       </div>

@@ -33,15 +33,15 @@ export function TopBar() {
   const isAdmin = searchParams.get("admin") === "true";
   const isFromFrontend = searchParams.get("from") === "frontend";
 
-  const {
-    canvas: { name, width, height, fabricCanvas },
-    renameProject,
-    videoState,
-    undo,
-    redo,
-    canUndo,
-    canRedo,
-  } = useEditorStore();
+  const name = useEditorStore((state) => state.canvas.name);
+  const width = useEditorStore((state) => state.canvas.width);
+  const height = useEditorStore((state) => state.canvas.height);
+  const fabricCanvas = useEditorStore((state) => state.canvas.fabricCanvas);
+  const renameProject = useEditorStore((state) => state.renameProject);
+  const undo = useEditorStore((state) => state.undo);
+  const redo = useEditorStore((state) => state.redo);
+  const canUndo = useEditorStore((state) => state.canUndo);
+  const canRedo = useEditorStore((state) => state.canRedo);
 
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState("");

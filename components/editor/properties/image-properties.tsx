@@ -86,7 +86,7 @@ const areCropsEqual = (a: CropState | null, b: CropState | null) => {
 };
 
 export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
-  const { getSelectedLayer, updateLayerData, setCanvas } = useEditorStore();
+  const { getSelectedLayer, updateLayerData } = useEditorStore();
   const selectedLayer = getSelectedLayer();
   const layerData = selectedLayer?.data || {};
 
@@ -184,25 +184,6 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
     selectedObject.set(props);
     selectedObject.setCoords();
     selectedObject.canvas?.requestRenderAll();
-  };
-
-  const syncArtboardToSelectedImage = () => {
-    const nextWidth = Math.max(1, Math.round(selectedObject.getScaledWidth()));
-    const nextHeight = Math.max(1, Math.round(selectedObject.getScaledHeight()));
-
-    selectedObject.set({
-      left: 0,
-      top: 0,
-      originX: "left",
-      originY: "top",
-    });
-    selectedObject.setCoords();
-    selectedObject.canvas?.setActiveObject(selectedObject);
-    setCanvas({ width: nextWidth, height: nextHeight });
-    setWidth(nextWidth);
-    setHeight(nextHeight);
-    setX(0);
-    setY(0);
   };
 
   const setRotationPreservingCenter = (angle: number) => {
@@ -449,7 +430,7 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
       selectedObject.set({ scaleY: scaleX });
       setHeight(Math.round((selectedObject.height || 1) * scaleX));
     }
-    syncArtboardToSelectedImage();
+    selectedObject.setCoords();
     selectedObject.canvas?.requestRenderAll();
     commit();
   };
@@ -463,7 +444,7 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
       selectedObject.set({ scaleX: scaleY });
       setWidth(Math.round((selectedObject.width || 1) * scaleY));
     }
-    syncArtboardToSelectedImage();
+    selectedObject.setCoords();
     selectedObject.canvas?.requestRenderAll();
     commit();
   };

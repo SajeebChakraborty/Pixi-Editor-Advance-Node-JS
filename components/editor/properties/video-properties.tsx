@@ -32,16 +32,20 @@ const finiteMediaTime = (value: unknown, fallback = 0) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
 
+const clampMediaTime = (value: unknown, min: number, max: number) => {
+  const safeMin = finiteMediaTime(min);
+  const safeMax = Math.max(safeMin, finiteMediaTime(max, safeMin));
+  return Math.min(safeMax, Math.max(safeMin, finiteMediaTime(value, safeMin)));
+};
+
 export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
-  const {
-    videoState,
-    setVideoState,
-    getSelectedLayer,
-    updateLayer,
-    updateLayerData,
-    videoRecentAssets,
-    addRecentAsset,
-  } = useEditorStore();
+  const getSelectedLayer = useEditorStore((state) => state.getSelectedLayer);
+  const updateLayer = useEditorStore((state) => state.updateLayer);
+  const updateLayerData = useEditorStore((state) => state.updateLayerData);
+  const videoRecentAssets = useEditorStore((state) => state.videoRecentAssets);
+  const addRecentAsset = useEditorStore((state) => state.addRecentAsset);
+  const isProjectPlaying = useEditorStore((state) => state.videoState.isPlaying);
+  const setVideoState = useEditorStore((state) => state.setVideoState);
   const selectedLayer = getSelectedLayer();
   const linkedAudio = getLinkedVideoAudio(selectedLayer);
   const audioInputRef = useRef<HTMLInputElement>(null);
@@ -134,6 +138,12 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   const hasPendingTrim =
     Math.abs(trimStart - committedTrimStart) >= 0.01 ||
     Math.abs(trimEnd - committedTrimEnd) >= 0.01;
+  const playbackMin = finiteMediaTime(trimStart);
+  const playbackMax = Math.max(
+    playbackMin + 0.1,
+    finiteMediaTime(trimEnd || duration || 0.1, playbackMin + 0.1),
+  );
+  const playbackValue = clampMediaTime(currentTime, playbackMin, playbackMax);
 
   useEffect(() => {
     if (!selectedLayer || sourceDuration <= 0) return;
@@ -164,15 +174,23 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
   ]);
 
   const togglePlay = () => {
-    setVideoState({ isPlaying: !videoState.isPlaying });
+    setVideoState({ isPlaying: !isProjectPlaying });
   };
 
   const handleSeek = (val: number) => {
-    const timelineTime =
-      Number(selectedLayer?.startTime || 0) +
-      Math.max(0, val - Number(selectedLayer?.mediaStart || 0));
-    setCurrentTime(val);
-    setVideoState({ currentTime: timelineTime, isPlaying: false });
+    const safeValue = clampMediaTime(val, committedTrimStart, committedTrimEnd);
+    setCurrentTime(safeValue);
+    if (videoEl) {
+      videoEl.pause();
+      try {
+        videoEl.currentTime = safeValue;
+      } catch {
+        // Metadata sync will seek once the element is ready.
+      }
+    }
+    if (isProjectPlaying) {
+      setVideoState({ isPlaying: false });
+    }
   };
 
   const handleVolume = (val: number) => {
@@ -348,7 +366,7 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
       }
     }
 
-    if (videoState.isPlaying) {
+    if (isProjectPlaying) {
       setVideoState({ isPlaying: false });
     }
   };
@@ -414,9 +432,9 @@ export function VideoProperties({ selectedObject }: VideoPropertiesProps) {
           <div className="flex-1 space-y-1">
             <input
               type="range"
-              value={finiteMediaTime(currentTime)}
-              min={trimStart}
-              max={Math.max(trimStart + 0.1, trimEnd || duration || 0.1)}
+              value={playbackValue}
+              min={playbackMin}
+              max={playbackMax}
               step={0.1}
               onChange={(event) =>
                 handleSeek(finiteMediaTime(event.currentTarget.value))

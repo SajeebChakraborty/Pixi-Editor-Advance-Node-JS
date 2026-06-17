@@ -144,7 +144,14 @@ function EditorContent() {
   >("photos"); // Default to photos for generation redirects
   const [isLeftPanelOpen, setIsLeftPanelOpen] = useState(true);
 
-  const store = useEditorStore();
+  const editorMode = useEditorStore((state) => state.editorMode);
+  const fabricCanvas = useEditorStore((state) => state.canvas.fabricCanvas);
+  const videoFabricCanvas = useEditorStore((state) => state.videoFabricCanvas);
+  const activeCanvasTool = useEditorStore((state) => state.activeCanvasTool);
+  const setEditorMode = useEditorStore((state) => state.setEditorMode);
+  const setActiveCanvasTool = useEditorStore(
+    (state) => state.setActiveCanvasTool,
+  );
 
   useEffect(() => {
     const mediaQuery = window.matchMedia("(min-width: 768px)");
@@ -222,12 +229,11 @@ function EditorContent() {
 
   useEffect(() => {
     if (!isEditorModeRestored) return;
-    window.localStorage.setItem("pixigen-editor-mode", store.editorMode);
-  }, [isEditorModeRestored, store.editorMode]);
+    window.localStorage.setItem("pixigen-editor-mode", editorMode);
+  }, [isEditorModeRestored, editorMode]);
 
-  const fabricCanvas = store.canvas.fabricCanvas;
   const initialEditorCanvas =
-    store.editorMode === "video" ? store.videoFabricCanvas : fabricCanvas;
+    editorMode === "video" ? videoFabricCanvas : fabricCanvas;
   const [hasLoadedInitial, setHasLoadedInitial] = useState(false);
 
   // Handle initial background/asset from URL
@@ -430,7 +436,7 @@ function EditorContent() {
     { id: "elements", icon: LayoutGrid, label: "Elements" },
   ];
 
-  const showTimeline = store.editorMode === "video";
+  const showTimeline = editorMode === "video";
 
   if (isDesktop === null || !isEditorModeRestored) {
     return (
@@ -461,17 +467,17 @@ function EditorContent() {
                 key={item.id}
                 onClick={() => {
                   if (item.type === "canvas") {
-                    store.setActiveCanvasTool(item.id as any);
+                    setActiveCanvasTool(item.id as any);
                     setIsLeftPanelOpen(false); // Close sidebar for interaction tools
                   } else if (item.type === "mixed") {
-                    store.setActiveCanvasTool(item.id as any);
+                    setActiveCanvasTool(item.id as any);
                     setActiveTool(item.id as any);
                     setIsLeftPanelOpen(true);
                   } else {
                     if (item.id === "video") {
-                      store.setEditorMode("video");
+                      setEditorMode("video");
                     } else if (item.id === "photos") {
-                      store.setEditorMode("photo");
+                      setEditorMode("photo");
                     }
                     if (activeTool === item.id) {
                       setIsLeftPanelOpen(!isLeftPanelOpen);
@@ -480,8 +486,8 @@ function EditorContent() {
                       setIsLeftPanelOpen(true);
                     }
                     // Reset to select tool when opening tabs unless it's mixed
-                    if (store.activeCanvasTool !== "select") {
-                      store.setActiveCanvasTool("select");
+                    if (activeCanvasTool !== "select") {
+                      setActiveCanvasTool("select");
                     }
                   }
                 }}
@@ -489,7 +495,7 @@ function EditorContent() {
                   "w-14 h-14 flex flex-col items-center justify-center gap-1 rounded-xl transition-all",
                   (activeTool === item.id && isLeftPanelOpen) ||
                     (item.type === "canvas" &&
-                      store.activeCanvasTool === item.id)
+                      activeCanvasTool === item.id)
                     ? "bg-white text-black"
                     : "text-gray-500 hover:text-white hover:bg-white/5",
                 )}
@@ -522,7 +528,7 @@ function EditorContent() {
               id="canvas-panel"
               className="relative flex flex-col bg-transparent"
             >
-              {store.editorMode === "video" ? (
+              {editorMode === "video" ? (
                 <VideoPlayerCanvas />
               ) : (
                 <>
@@ -551,7 +557,7 @@ function EditorContent() {
         {/* Right Sidebar */}
         <aside className="w-[320px] flex-shrink-0 bg-[#000000] flex flex-col overflow-hidden border-l border-white/10">
           <div className="flex-1 overflow-y-auto no-scrollbar px-5 pt-5 pb-12">
-            {store.editorMode === "video" ? (
+            {editorMode === "video" ? (
               <VideoPlayerProperties />
             ) : (
               <PropertiesPanel />
@@ -564,7 +570,7 @@ function EditorContent() {
       <div className="flex flex-1 flex-col overflow-hidden bg-[#0a0a0a] relative">
         {/* Canvas Area */}
         <div className="flex-1 relative overflow-hidden bg-[#f1f3f6]">
-          {store.editorMode === "video" ? <VideoPlayerCanvas /> : <Canvas />}
+          {editorMode === "video" ? <VideoPlayerCanvas /> : <Canvas />}
         </div>
 
         {/* Timeline strip (if needed) */}
@@ -624,9 +630,9 @@ function EditorContent() {
                   key={item.id}
                   onClick={() => {
                     if (item.id === "video") {
-                      store.setEditorMode("video");
+                      setEditorMode("video");
                     } else if (item.id === "photos") {
-                      store.setEditorMode("photo");
+                      setEditorMode("photo");
                     }
                     if (activeTool === item.id && mobileSheetOpen) {
                       setMobileSheetOpen(false);

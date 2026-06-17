@@ -7,21 +7,21 @@ import { cn } from "@/lib/utils";
 import { useEditorStore } from "@/lib/store";
 
 export function VideoPlayerProperties() {
-  const {
-    videoState,
-    setVideoState,
-    getLayers,
-    deleteLayer,
-  } = useEditorStore();
-  const {
-    volume,
-    isMuted,
-    playbackRate,
-    startTime,
-    endTime,
-    duration,
-    filters,
-  } = videoState;
+  const volume = useEditorStore((state) => state.videoState.volume);
+  const isMuted = useEditorStore((state) => state.videoState.isMuted);
+  const playbackRate = useEditorStore(
+    (state) => state.videoState.playbackRate,
+  );
+  const startTime = useEditorStore((state) => state.videoState.startTime);
+  const endTime = useEditorStore((state) => state.videoState.endTime);
+  const duration = useEditorStore((state) => state.videoState.duration);
+  const filters = useEditorStore((state) => state.videoState.filters);
+  const pages = useEditorStore((state) => state.canvas.pages);
+  const activePageId = useEditorStore((state) => state.canvas.activePageId);
+  const setVideoState = useEditorStore((state) => state.setVideoState);
+  const deleteLayer = useEditorStore((state) => state.deleteLayer);
+  const layers =
+    pages.find((page) => page.id === activePageId)?.layers || [];
 
   const formatTime = (time: number) => {
     const mins = Math.floor(time / 60);
@@ -169,7 +169,7 @@ export function VideoPlayerProperties() {
           Layers List
         </h3>
         <div className="space-y-2">
-          {getLayers().map((layer) => (
+          {layers.map((layer) => (
             <div
               key={layer.id}
               className="group flex items-center justify-between rounded-lg border border-white/5 bg-white/5 p-2 transition-all hover:border-white/10"
