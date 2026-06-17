@@ -1,0 +1,14 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://pixieditor.pixizen.io",
+      "https://*.vercel.app",
+      "http://localhost:3000",
+      "http://localhost:3001"
+    ],
+    "AllowedMethods": ["GET", "HEAD", "PUT"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3000
+  }
+]
