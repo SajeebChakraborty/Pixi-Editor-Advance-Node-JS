@@ -11,6 +11,7 @@ const REGION = process.env.S3_REGION || "eu-north-1";
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || "pixigen-first";
 const ENDPOINT = process.env.S3_ENDPOINT;
 const PUBLIC_URL = process.env.S3_PUBLIC_URL?.replace(/\/$/, "");
+type PresignClient = Parameters<typeof getSignedUrl>[0];
 
 const s3Client = new S3Client({
   region: REGION,
@@ -110,7 +111,9 @@ export class S3Storage {
         ContentType: contentType,
       });
 
-      return await getSignedUrl(s3Client, command, { expiresIn: 60 * 5 });
+      return await getSignedUrl(s3Client as unknown as PresignClient, command, {
+        expiresIn: 60 * 5,
+      });
     } catch (error) {
       console.error("[S3] Presign failed:", formatStorageError(error));
       return null;
