@@ -5,6 +5,7 @@ import {
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const REGION = process.env.S3_REGION || "eu-north-1";
 const BUCKET_NAME = process.env.S3_BUCKET_NAME || "pixigen-first";
@@ -91,6 +92,27 @@ export class S3Storage {
       return this.getPublicUrl(fileName);
     } catch (error) {
       console.error("[S3] Upload failed:", formatStorageError(error));
+      return null;
+    }
+  }
+
+  /**
+   * Create a short-lived browser upload URL without exposing S3 credentials.
+   */
+  static async createPresignedUploadUrl(
+    fileName: string,
+    contentType: string,
+  ): Promise<string | null> {
+    try {
+      const command = new PutObjectCommand({
+        Bucket: BUCKET_NAME,
+        Key: fileName,
+        ContentType: contentType,
+      });
+
+      return await getSignedUrl(s3Client, command, { expiresIn: 60 * 5 });
+    } catch (error) {
+      console.error("[S3] Presign failed:", formatStorageError(error));
       return null;
     }
   }
