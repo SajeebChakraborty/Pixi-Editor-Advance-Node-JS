@@ -33,6 +33,7 @@ import {
   buildVideoComposition,
   type SceneTransitionType,
 } from "@/lib/video-composition";
+import { SCENE_TRANSITION_OPTIONS } from "@/lib/video-transitions";
 
 const videoFrameCache = new Map<string, Promise<string[]>>();
 
@@ -589,9 +590,11 @@ export function Timeline() {
                   }
                   className="h-7 rounded-md border border-gray-200 bg-white px-2 text-[10px] normal-case text-gray-700"
                 >
-                  <option value="none">None</option>
-                  <option value="fade">Fade</option>
-                  <option value="dissolve">Dissolve</option>
+                  {SCENE_TRANSITION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-500">
@@ -606,9 +609,11 @@ export function Timeline() {
                   }
                   className="h-7 rounded-md border border-gray-200 bg-white px-2 text-[10px] normal-case text-gray-700"
                 >
-                  <option value="none">None</option>
-                  <option value="fade">Fade</option>
-                  <option value="dissolve">Dissolve</option>
+                  {SCENE_TRANSITION_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
             </>

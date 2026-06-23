@@ -1,6 +1,10 @@
 import type { Layer } from "./store";
+import {
+  SCENE_TRANSITION_TYPES,
+  type SceneTransitionType,
+} from "./video-transitions";
 
-export type SceneTransitionType = "none" | "fade" | "dissolve";
+export type { SceneTransitionType };
 
 export interface SceneTransition {
   type: SceneTransitionType;
@@ -24,6 +28,15 @@ export interface ResolvedSceneFrame {
   scene: CompositionScene;
   sourceTime: number;
   opacity: number;
+  translateXPercent: number;
+  translateYPercent: number;
+  scale: number;
+  clipInset: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
 }
 
 export interface VideoComposition {
@@ -39,6 +52,124 @@ const finiteNonNegative = (value: unknown, fallback = 0) => {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 };
 
+const clamp01 = (value: number) => Math.min(1, Math.max(0, value));
+
+const emptyClipInset = () => ({
+  top: 0,
+  right: 0,
+  bottom: 0,
+  left: 0,
+});
+
+const defaultFrameStyle = () => ({
+  opacity: 1,
+  translateXPercent: 0,
+  translateYPercent: 0,
+  scale: 1,
+  clipInset: emptyClipInset(),
+});
+
+const getTransitionProgress = (elapsed: number, duration: number) =>
+  clamp01(elapsed / Math.max(MIN_SCENE_DURATION, duration));
+
+const applyEnterTransition = (
+  type: SceneTransitionType,
+  progress: number,
+) => {
+  const style = defaultFrameStyle();
+
+  switch (type) {
+    case "fade":
+    case "dissolve":
+      style.opacity = progress;
+      break;
+    case "slide-left":
+      style.translateXPercent = (1 - progress) * 100;
+      break;
+    case "slide-right":
+      style.translateXPercent = -(1 - progress) * 100;
+      break;
+    case "slide-up":
+      style.translateYPercent = (1 - progress) * 100;
+      break;
+    case "slide-down":
+      style.translateYPercent = -(1 - progress) * 100;
+      break;
+    case "zoom-in":
+      style.scale = 0.5 + progress * 0.5;
+      style.opacity = progress;
+      break;
+    case "zoom-out":
+      style.scale = 1.5 - progress * 0.5;
+      style.opacity = progress;
+      break;
+    case "wipe-left":
+      style.clipInset.right = (1 - progress) * 100;
+      break;
+    default:
+      break;
+  }
+
+  return style;
+};
+
+const applyExitTransition = (
+  type: SceneTransitionType,
+  progress: number,
+) => {
+  const style = defaultFrameStyle();
+
+  switch (type) {
+    case "fade":
+    case "dissolve":
+      style.opacity = 1 - progress;
+      break;
+    case "slide-left":
+      style.translateXPercent = -progress * 100;
+      break;
+    case "slide-right":
+      style.translateXPercent = progress * 100;
+      break;
+    case "slide-up":
+      style.translateYPercent = -progress * 100;
+      break;
+    case "slide-down":
+      style.translateYPercent = progress * 100;
+      break;
+    case "zoom-in":
+      style.scale = 1 + progress * 0.5;
+      style.opacity = 1 - progress;
+      break;
+    case "zoom-out":
+      style.scale = 1 - progress * 0.5;
+      style.opacity = 1 - progress;
+      break;
+    case "wipe-left":
+      style.clipInset.left = progress * 100;
+      break;
+    default:
+      break;
+  }
+
+  return style;
+};
+
+const mergeFrameStyles = (
+  base: ReturnType<typeof defaultFrameStyle>,
+  overlay: ReturnType<typeof defaultFrameStyle>,
+) => ({
+  opacity: Math.min(base.opacity, overlay.opacity),
+  translateXPercent: overlay.translateXPercent || base.translateXPercent,
+  translateYPercent: overlay.translateYPercent || base.translateYPercent,
+  scale: overlay.scale !== 1 ? overlay.scale : base.scale,
+  clipInset: {
+    top: Math.max(base.clipInset.top, overlay.clipInset.top),
+    right: Math.max(base.clipInset.right, overlay.clipInset.right),
+    bottom: Math.max(base.clipInset.bottom, overlay.clipInset.bottom),
+    left: Math.max(base.clipInset.left, overlay.clipInset.left),
+  },
+});
+
 export const normalizeTransition = (
   value: unknown,
   maxDuration = Number.POSITIVE_INFINITY,
@@ -47,10 +178,11 @@ export const normalizeTransition = (
     value && typeof value === "object"
       ? (value as Partial<SceneTransition>)
       : {};
-  const type: SceneTransitionType =
-    candidate.type === "fade" || candidate.type === "dissolve"
-      ? candidate.type
-      : "none";
+  const type: SceneTransitionType = SCENE_TRANSITION_TYPES.includes(
+    candidate.type as SceneTransitionType,
+  )
+    ? (candidate.type as SceneTransitionType)
+    : "none";
   const requestedDuration = finiteNonNegative(
     candidate.duration,
     DEFAULT_TRANSITION_DURATION,
@@ -161,7 +293,7 @@ export const resolveCompositionFrame = (
   );
 
   return activeScenes.map((scene) => {
-    let opacity = 1;
+    let style = defaultFrameStyle();
     const previousScene = composition.scenes[scene.order - 1];
     const nextScene = composition.scenes[scene.order + 1];
 
@@ -170,10 +302,14 @@ export const resolveCompositionFrame = (
       scene.transitionBefore.type !== "none" &&
       safeTime < previousScene.timelineEnd
     ) {
-      const progress =
-        (safeTime - scene.timelineStart) /
-        Math.max(MIN_SCENE_DURATION, scene.transitionBefore.duration);
-      opacity = Math.min(1, Math.max(0, progress));
+      const progress = getTransitionProgress(
+        safeTime - scene.timelineStart,
+        scene.transitionBefore.duration,
+      );
+      style = mergeFrameStyles(
+        style,
+        applyEnterTransition(scene.transitionBefore.type, progress),
+      );
     }
 
     if (
@@ -181,10 +317,14 @@ export const resolveCompositionFrame = (
       nextScene.transitionBefore.type !== "none" &&
       safeTime >= nextScene.timelineStart
     ) {
-      const progress =
-        (safeTime - nextScene.timelineStart) /
-        Math.max(MIN_SCENE_DURATION, nextScene.transitionBefore.duration);
-      opacity = Math.min(opacity, Math.max(0, 1 - progress));
+      const progress = getTransitionProgress(
+        safeTime - nextScene.timelineStart,
+        nextScene.transitionBefore.duration,
+      );
+      style = mergeFrameStyles(
+        style,
+        applyExitTransition(nextScene.transitionBefore.type, progress),
+      );
     }
 
     if (
@@ -192,9 +332,12 @@ export const resolveCompositionFrame = (
       scene.transitionBefore.type === "fade" &&
       scene.transitionBefore.duration > 0
     ) {
-      opacity = Math.min(
-        opacity,
-        (safeTime - scene.timelineStart) / scene.transitionBefore.duration,
+      style.opacity = Math.min(
+        style.opacity,
+        getTransitionProgress(
+          safeTime - scene.timelineStart,
+          scene.transitionBefore.duration,
+        ),
       );
     }
 
@@ -203,9 +346,12 @@ export const resolveCompositionFrame = (
       scene.transitionAfter.type === "fade" &&
       scene.transitionAfter.duration > 0
     ) {
-      opacity = Math.min(
-        opacity,
-        (scene.timelineEnd - safeTime) / scene.transitionAfter.duration,
+      style.opacity = Math.min(
+        style.opacity,
+        getTransitionProgress(
+          scene.timelineEnd - safeTime,
+          scene.transitionAfter.duration,
+        ),
       );
     }
 
@@ -213,7 +359,11 @@ export const resolveCompositionFrame = (
       scene,
       sourceTime:
         scene.sourceStart + Math.max(0, safeTime - scene.timelineStart),
-      opacity: Math.min(1, Math.max(0, opacity)),
+      opacity: clamp01(style.opacity),
+      translateXPercent: style.translateXPercent,
+      translateYPercent: style.translateYPercent,
+      scale: style.scale,
+      clipInset: style.clipInset,
     };
   });
 };

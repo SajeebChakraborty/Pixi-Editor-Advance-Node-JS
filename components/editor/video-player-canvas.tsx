@@ -28,6 +28,10 @@ import {
   addMediaFromUrl,
   applyPersistedLayerState,
 } from "@/lib/editor-utils";
+import {
+  applyResolvedFramePresentation,
+  buildVideoFilterCss,
+} from "@/lib/video-filters";
 
 export function VideoPlayerCanvas() {
   const {
@@ -69,6 +73,7 @@ export function VideoPlayerCanvas() {
     () => buildVideoComposition(getLayers()),
     [getLayers, globalCanvas.pages, globalCanvas.activePageId],
   );
+  const filterCss = useMemo(() => buildVideoFilterCss(filters), [filters]);
   const audioLayers = useMemo(
     () => getLayers().filter((layer) => layer.type === "audio"),
     [getLayers, globalCanvas.pages, globalCanvas.activePageId],
@@ -282,7 +287,7 @@ export function VideoPlayerCanvas() {
         syncPlayback();
       }
 
-      video.style.opacity = String(frame.opacity);
+      applyResolvedFramePresentation(video, frame, filterCss);
       video.style.display = "block";
       video.muted =
         isMuted || Boolean(linkedAudio && !linkedAudio.allowNativeAudio);
@@ -316,6 +321,7 @@ export function VideoPlayerCanvas() {
     playbackRate,
     videoUrl,
     volume,
+    filterCss,
   ]);
 
   useEffect(() => {
@@ -706,18 +712,12 @@ export function VideoPlayerCanvas() {
               <video
                 ref={videoARef}
                 className="absolute inset-0 h-full w-full object-contain"
-                style={{
-                  filter: `grayscale(${filters.grayscale}%) blur(${filters.blur}px) brightness(${filters.brightness}%)`,
-                }}
                 playsInline
                 preload="auto"
               />
               <video
                 ref={videoBRef}
                 className="absolute inset-0 h-full w-full object-contain"
-                style={{
-                  filter: `grayscale(${filters.grayscale}%) blur(${filters.blur}px) brightness(${filters.brightness}%)`,
-                }}
                 playsInline
                 preload="auto"
               />

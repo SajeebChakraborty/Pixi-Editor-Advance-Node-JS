@@ -5,6 +5,9 @@ import { CanvasProperties } from "@/components/editor/properties/canvas-properti
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { useEditorStore } from "@/lib/store";
+import { DEFAULT_VIDEO_FILTERS } from "@/lib/video-filters";
+import type { SceneTransitionType } from "@/lib/video-composition";
+import { SCENE_TRANSITION_OPTIONS } from "@/lib/video-transitions";
 
 export function VideoPlayerProperties() {
   const volume = useEditorStore((state) => state.videoState.volume);
@@ -15,13 +18,33 @@ export function VideoPlayerProperties() {
   const startTime = useEditorStore((state) => state.videoState.startTime);
   const endTime = useEditorStore((state) => state.videoState.endTime);
   const duration = useEditorStore((state) => state.videoState.duration);
-  const filters = useEditorStore((state) => state.videoState.filters);
+  const filters = {
+    ...DEFAULT_VIDEO_FILTERS,
+    ...useEditorStore((state) => state.videoState.filters),
+  };
   const pages = useEditorStore((state) => state.canvas.pages);
   const activePageId = useEditorStore((state) => state.canvas.activePageId);
   const setVideoState = useEditorStore((state) => state.setVideoState);
   const deleteLayer = useEditorStore((state) => state.deleteLayer);
+  const selectedLayerId = useEditorStore(
+    (state) => state.canvas.selectedLayerId,
+  );
+  const setVideoSceneTransition = useEditorStore(
+    (state) => state.setVideoSceneTransition,
+  );
   const layers =
     pages.find((page) => page.id === activePageId)?.layers || [];
+  const selectedLayer = layers.find((layer) => layer.id === selectedLayerId);
+  const selectedVideoLayer =
+    selectedLayer?.type === "video" ? selectedLayer : undefined;
+
+  const setTransition = (side: "before" | "after", type: SceneTransitionType) => {
+    if (!selectedVideoLayer) return;
+    setVideoSceneTransition(selectedVideoLayer.id, side, {
+      type,
+      duration: type === "none" ? 0 : 0.5,
+    });
+  };
 
   const formatTime = (time: number) => {
     const mins = Math.floor(time / 60);
@@ -104,7 +127,7 @@ export function VideoPlayerProperties() {
           <button
             onClick={() =>
               setVideoState({
-                filters: { grayscale: 0, blur: 0, brightness: 100 },
+                filters: { ...DEFAULT_VIDEO_FILTERS },
               })
             }
             className="text-blue-400 hover:text-blue-300"
@@ -137,7 +160,75 @@ export function VideoPlayerProperties() {
               setVideoState({ filters: { ...filters, brightness } })
             }
           />
+          <EffectSlider
+            label="Contrast"
+            value={filters.contrast}
+            max={200}
+            onChange={(contrast) =>
+              setVideoState({ filters: { ...filters, contrast } })
+            }
+          />
+          <EffectSlider
+            label="Saturation"
+            value={filters.saturation}
+            max={200}
+            onChange={(saturation) =>
+              setVideoState({ filters: { ...filters, saturation } })
+            }
+          />
+          <EffectSlider
+            label="Sepia"
+            value={filters.sepia}
+            max={100}
+            onChange={(sepia) =>
+              setVideoState({ filters: { ...filters, sepia } })
+            }
+          />
+          <EffectSlider
+            label="Hue Rotate"
+            value={filters.hueRotate}
+            max={360}
+            onChange={(hueRotate) =>
+              setVideoState({ filters: { ...filters, hueRotate } })
+            }
+          />
+          <EffectSlider
+            label="Invert"
+            value={filters.invert}
+            max={100}
+            onChange={(invert) =>
+              setVideoState({ filters: { ...filters, invert } })
+            }
+          />
         </div>
+      </section>
+
+      <section className="space-y-4 px-4">
+        <h3 className="border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
+          Transitions
+        </h3>
+        {selectedVideoLayer ? (
+          <div className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
+            <TransitionSelect
+              label="Before Clip"
+              value={selectedVideoLayer.data?.transitionBefore?.type || "none"}
+              onChange={(type) => setTransition("before", type)}
+            />
+            <TransitionSelect
+              label="After Clip"
+              value={selectedVideoLayer.data?.transitionAfter?.type || "none"}
+              onChange={(type) => setTransition("after", type)}
+            />
+            <p className="text-[9px] leading-relaxed text-white/35">
+              Applies when this clip meets the previous or next video on the
+              timeline. Use two or more clips to preview the effect.
+            </p>
+          </div>
+        ) : (
+          <p className="rounded-xl border border-dashed border-white/10 bg-[#18181b]/30 px-4 py-6 text-center text-[10px] leading-relaxed text-white/40">
+            Select a video clip on the timeline to choose transitions.
+          </p>
+        )}
       </section>
 
       <section className="space-y-4 px-4">
@@ -196,6 +287,37 @@ export function VideoPlayerProperties() {
         </div>
       </section>
     </div>
+  );
+}
+
+function TransitionSelect({
+  label,
+  value,
+  onChange,
+}: {
+  label: string;
+  value: SceneTransitionType;
+  onChange: (type: SceneTransitionType) => void;
+}) {
+  return (
+    <label className="block space-y-2">
+      <span className="text-[10px] font-bold uppercase text-white/60">
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(event) =>
+          onChange(event.target.value as SceneTransitionType)
+        }
+        className="h-9 w-full rounded-lg border border-white/10 bg-[#111] px-3 text-[11px] font-medium text-white outline-none focus:border-[#8b5cf6]"
+      >
+        {SCENE_TRANSITION_OPTIONS.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
   );
 }
 

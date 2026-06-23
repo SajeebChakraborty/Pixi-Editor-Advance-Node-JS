@@ -1,6 +1,7 @@
 import {
   buildVideoComposition,
   resolveCompositionFrame,
+  type ResolvedSceneFrame,
 } from "./video-composition";
 import {
   resolveVideoPlaybackUrl,
@@ -12,6 +13,7 @@ import {
   getLinkedVideoAudio,
   isLinkedAudioActive,
 } from "./linked-video-audio";
+import { buildVideoFilterCss } from "./video-filters";
 
 export type VideoExportFormat = "mp4" | "webm";
 
@@ -98,19 +100,54 @@ const drawContainedVideo = (
   video: HTMLVideoElement,
   width: number,
   height: number,
+  frame?: Pick<
+    ResolvedSceneFrame,
+    | "translateXPercent"
+    | "translateYPercent"
+    | "scale"
+    | "clipInset"
+    | "opacity"
+  >,
+  filterCss?: string,
 ) => {
   const sourceWidth = video.videoWidth || width;
   const sourceHeight = video.videoHeight || height;
   const scale = Math.min(width / sourceWidth, height / sourceHeight);
   const drawWidth = sourceWidth * scale;
   const drawHeight = sourceHeight * scale;
-  context.drawImage(
-    video,
-    (width - drawWidth) / 2,
-    (height - drawHeight) / 2,
-    drawWidth,
-    drawHeight,
-  );
+  const drawX = (width - drawWidth) / 2;
+  const drawY = (height - drawHeight) / 2;
+
+  context.save();
+  if (filterCss) {
+    context.filter = filterCss;
+  }
+  context.globalAlpha *= frame?.opacity ?? 1;
+
+  if (frame) {
+    const { top, right, bottom, left } = frame.clipInset;
+    if (top || right || bottom || left) {
+      context.beginPath();
+      context.rect(
+        drawX + (left / 100) * drawWidth,
+        drawY + (top / 100) * drawHeight,
+        drawWidth * (1 - (left + right) / 100),
+        drawHeight * (1 - (top + bottom) / 100),
+      );
+      context.clip();
+    }
+
+    context.translate(width / 2, height / 2);
+    context.translate(
+      (frame.translateXPercent / 100) * width,
+      (frame.translateYPercent / 100) * height,
+    );
+    context.scale(frame.scale, frame.scale);
+    context.translate(-width / 2, -height / 2);
+  }
+
+  context.drawImage(video, drawX, drawY, drawWidth, drawHeight);
+  context.restore();
 };
 
 export const exportVideo = async (
@@ -321,6 +358,7 @@ export const exportVideo = async (
 
     context.fillStyle = "#000000";
     context.fillRect(0, 0, width, height);
+    const filterCss = buildVideoFilterCss(store.videoState.filters);
     frames.forEach((frame) => {
       const sourceUrl = frame.scene.layer.data?.url;
       const video = sourceUrl ? sourceVideos.get(sourceUrl) : undefined;
@@ -342,10 +380,7 @@ export const exportVideo = async (
           : Math.min(1, Math.max(0, store.videoState.volume)) * frame.opacity,
         audioContext.currentTime,
       );
-      context.save();
-      context.globalAlpha = frame.opacity;
-      drawContainedVideo(context, video, width, height);
-      context.restore();
+      drawContainedVideo(context, video, width, height, frame, filterCss);
     });
 
     const activeFrameByLayerId = new Map(

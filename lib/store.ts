@@ -6,6 +6,10 @@ import {
   synchronizeVideoSceneLayers,
   type SceneTransition,
 } from './video-composition'
+import {
+  DEFAULT_VIDEO_FILTERS,
+  type VideoFilters,
+} from './video-filters'
 
 // Canvas presets
 export const CANVAS_PRESETS = {
@@ -159,11 +163,7 @@ export interface VideoState {
   playbackRate: number
   startTime: number
   endTime: number
-  filters: {
-    grayscale: number
-    blur: number
-    brightness: number
-  }
+  filters: VideoFilters
 }
 
 export type EditorTool = 'select' | 'hand' | 'text' | 'circle' | 'square' | 'star' | 'pen' | 'arrow'
@@ -429,11 +429,7 @@ const initialVideoState: VideoState = {
   playbackRate: 1,
   startTime: 0,
   endTime: 0,
-  filters: {
-    grayscale: 0,
-    blur: 0,
-    brightness: 100,
-  },
+  filters: { ...DEFAULT_VIDEO_FILTERS },
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({
