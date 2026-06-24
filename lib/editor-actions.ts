@@ -115,10 +115,18 @@ export const getLayerObject = (
   );
 };
 
-export const commitCanvasHistory = (canvas?: fabric.Canvas | null) => {
-  if (!canvas || (canvas as any).isHistoryLoading) return;
+export const getActiveFabricCanvas = () => {
   const store = useEditorStore.getState();
-  store.saveToHistory(JSON.stringify(canvas.toJSON()));
+  return store.editorMode === "video"
+    ? store.videoFabricCanvas || store.canvas.fabricCanvas
+    : store.canvas.fabricCanvas;
+};
+
+export const commitCanvasHistory = (canvas?: fabric.Canvas | null) => {
+  const targetCanvas = canvas || getActiveFabricCanvas();
+  if (!targetCanvas || (targetCanvas as any).isHistoryLoading) return;
+  const store = useEditorStore.getState();
+  store.saveToHistory(JSON.stringify(targetCanvas.toJSON()));
 };
 
 export const mergeLayerData = (layerId: string, data: Record<string, any>) => {
@@ -137,12 +145,13 @@ export const mergeLayerData = (layerId: string, data: Record<string, any>) => {
 export const selectObjectForLayer = (layerId: string) => {
   const store = useEditorStore.getState();
   const layer = store.getLayers().find((item) => item.id === layerId);
-  const object = getLayerObject(layer, store.canvas.fabricCanvas);
+  const fabricCanvas = getActiveFabricCanvas();
+  const object = getLayerObject(layer, fabricCanvas);
   store.selectLayer(layerId);
 
-  if (object && store.canvas.fabricCanvas) {
-    store.canvas.fabricCanvas.setActiveObject(object);
-    store.canvas.fabricCanvas.requestRenderAll();
+  if (object && fabricCanvas) {
+    fabricCanvas.setActiveObject(object);
+    fabricCanvas.requestRenderAll();
   }
 };
 

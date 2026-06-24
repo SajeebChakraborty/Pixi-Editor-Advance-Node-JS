@@ -350,6 +350,8 @@ export const addMediaFromUrl = async (
     const transparentPixel = document.createElement("canvas");
     transparentPixel.width = 1;
     transparentPixel.height = 1;
+    const pixelContext = transparentPixel.getContext("2d");
+    pixelContext?.fillRect(0, 0, 1, 1);
 
     const fabricVideo = new fabric.FabricImage(transparentPixel, {
       left: (targetWidth - vWidth * displayScale) / 2,
@@ -362,6 +364,13 @@ export const addMediaFromUrl = async (
       objectCaching: false,
       visible: true,
       opacity: 1,
+      selectable: true,
+      evented: true,
+      hasControls: true,
+      lockMovementX: false,
+      lockMovementY: false,
+      lockScalingX: false,
+      lockScalingY: false,
     });
     (fabricVideo as any)._videoEl = videoEl;
     (fabricVideo as any)._videoOpacity = 1;
@@ -373,9 +382,7 @@ export const addMediaFromUrl = async (
     };
 
     targetCanvas.add(fabricVideo);
-    if (targetCanvas !== currentStore.videoFabricCanvas) {
-      attachVideoOverlay(targetCanvas, fabricVideo as any, videoEl);
-    }
+    attachVideoOverlay(targetCanvas, fabricVideo as any, videoEl);
     targetCanvas.setActiveObject(fabricVideo);
     targetCanvas.bringObjectToFront(fabricVideo);
     targetCanvas.requestRenderAll();

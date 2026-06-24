@@ -22,6 +22,7 @@ import {
   Combine,
   Sparkles,
   Layers,
+  ArrowLeftRight,
 } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
@@ -213,23 +214,26 @@ export function Timeline() {
   );
 
   const [zoom, setZoom] = useState(100);
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
+    null,
+  );
   const containerRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
-  const pendingSceneReorderRef = useRef<{
-    layerId: string;
-    targetIndex: number;
-  } | null>(null);
-  const [dragState, setDragState] = useState<{
+  const dragRef = useRef<{
     type: "move" | "resize-start" | "resize-end" | "row-resize";
     layerId: string;
     rowId?: string;
     startX: number;
     startY: number;
+    trackWidth: number;
     originalStart: number;
     originalDuration: number;
     originalTrack: number;
     originalMediaStart: number;
     originalRowHeight?: number;
+    segmentKind?: TimelineSegment["kind"];
+    transitionSide?: "before" | "after";
+    transitionType?: string;
   } | null>(null);
 
   const duration = Math.max(
@@ -247,7 +251,263 @@ export function Timeline() {
   const effectStartTime = videoState.effectStartTime ?? 0;
   const effectEndTime = videoState.effectEndTime ?? 0;
 
+  const pendingSceneReorderRef = useRef<{
+    layerId: string;
+    targetIndex: number;
+  } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
   const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
+
+  const getTrackWidth = (element: HTMLElement | null) => {
+    const track =
+      element?.closest<HTMLElement>("[data-timeline-track]") ||
+      rulerRef.current;
+    return Math.max(1, track?.getBoundingClientRect().width || 1);
+  };
+
+  const beginDrag = (
+    drag: NonNullable<typeof dragRef.current>,
+    element: HTMLElement | null,
+    pointerId?: number,
+  ) => {
+    if (element && pointerId !== undefined) {
+      element.setPointerCapture(pointerId);
+    }
+    dragRef.current = { ...drag, trackWidth: getTrackWidth(element) };
+    setIsDragging(true);
+  };
+
+  const applyDragAt = useCallback((clientX: number, clientY: number) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+
+    const store = useEditorStore.getState();
+    const currentLayers = store.getLayers();
+    const currentComposition = buildVideoComposition(currentLayers);
+    const timelineDuration = Math.max(
+      0.1,
+      Number(
+        currentComposition.duration || store.videoState.duration || 30,
+      ),
+    );
+    const deltaTime =
+      ((clientX - drag.startX) / drag.trackWidth) * timelineDuration;
+
+    if (drag.type === "move") {
+      const layer = currentLayers.find((item) => item.id === drag.layerId);
+      if (drag.layerId === EFFECT_RANGE_LAYER_ID) {
+        let newStart = drag.originalStart + deltaTime;
+        newStart = Math.max(
+          0,
+          Math.min(newStart, timelineDuration - drag.originalDuration),
+        );
+        store.setVideoState({
+          effectStartTime: newStart,
+          effectEndTime: newStart + drag.originalDuration,
+        });
+        return;
+      }
+
+      if (layer?.type === "video") {
+        const draggedCenter =
+          drag.originalStart + drag.originalDuration / 2 + deltaTime;
+        const targetIndex = currentComposition.scenes.reduce(
+          (closestIndex, scene, index) => {
+            const currentDistance = Math.abs(
+              draggedCenter -
+                (currentComposition.scenes[closestIndex]?.timelineStart || 0),
+            );
+            const nextDistance = Math.abs(
+              draggedCenter - scene.timelineStart,
+            );
+            return nextDistance < currentDistance ? index : closestIndex;
+          },
+          0,
+        );
+        pendingSceneReorderRef.current = {
+          layerId: drag.layerId,
+          targetIndex,
+        };
+        return;
+      }
+
+      let newStart = drag.originalStart + deltaTime;
+      newStart = Math.max(
+        0,
+        Math.min(newStart, timelineDuration - drag.originalDuration),
+      );
+      const deltaY = clientY - drag.startY;
+      const trackDelta = Math.round(deltaY / 56);
+      const newTrack = Math.max(0, drag.originalTrack + trackDelta);
+      store.updateLayer(drag.layerId, {
+        startTime: newStart,
+        track: newTrack,
+      });
+      return;
+    }
+
+    if (drag.type === "row-resize" && drag.rowId) {
+      const nextHeight = Math.min(
+        120,
+        Math.max(36, (drag.originalRowHeight || 48) + (clientY - drag.startY)),
+      );
+      setRowHeights((previous) => ({
+        ...previous,
+        [drag.rowId!]: nextHeight,
+      }));
+      return;
+    }
+
+    if (drag.segmentKind === "transition" && drag.transitionSide) {
+      const layer = currentLayers.find((item) => item.id === drag.layerId);
+      if (!layer) return;
+      const existing =
+        drag.transitionSide === "before"
+          ? layer.data?.transitionBefore
+          : layer.data?.transitionAfter;
+      const transitionType = existing?.type || drag.transitionType || "dissolve";
+      if (transitionType === "none") return;
+
+      const maxDuration = Math.max(
+        0.1,
+        Math.min(timelineDuration / 2, Number(layer.duration || 1) / 2),
+      );
+      let newDuration =
+        drag.type === "resize-end"
+          ? drag.originalDuration + deltaTime
+          : drag.originalDuration - deltaTime;
+      newDuration = Math.max(0.1, Math.min(maxDuration, newDuration));
+      store.setVideoSceneTransition(drag.layerId, drag.transitionSide, {
+        type: transitionType,
+        duration: newDuration,
+      });
+      return;
+    }
+
+    if (drag.type === "resize-start") {
+      if (drag.layerId === EFFECT_RANGE_LAYER_ID) {
+        const fixedEnd = drag.originalStart + drag.originalDuration;
+        const newStart = Math.min(
+          fixedEnd - 0.1,
+          Math.max(0, drag.originalStart + deltaTime),
+        );
+        store.setVideoState({
+          effectStartTime: newStart,
+          effectEndTime: fixedEnd,
+        });
+        return;
+      }
+
+      const layer = currentLayers.find((item) => item.id === drag.layerId);
+      if (layer?.type === "video") {
+        const maxExtend = drag.originalMediaStart;
+        const maxTrim = drag.originalDuration - 0.1;
+        const shift = Math.max(-maxExtend, Math.min(maxTrim, deltaTime));
+        store.updateLayer(drag.layerId, {
+          mediaStart: Math.max(0, drag.originalMediaStart + shift),
+          duration: Math.max(0.1, drag.originalDuration - shift),
+        });
+        return;
+      }
+
+      if (layer?.type === "audio") {
+        const fixedEnd = drag.originalStart + drag.originalDuration;
+        const earliestTimelineStart = Math.max(
+          0,
+          drag.originalStart - drag.originalMediaStart,
+        );
+        const newStart = Math.min(
+          fixedEnd - 0.1,
+          Math.max(earliestTimelineStart, drag.originalStart + deltaTime),
+        );
+        const shift = newStart - drag.originalStart;
+        store.updateLayer(drag.layerId, {
+          startTime: newStart,
+          duration: fixedEnd - newStart,
+          mediaStart: Math.max(0, drag.originalMediaStart + shift),
+        });
+        return;
+      }
+
+      let newStart = drag.originalStart + deltaTime;
+      let newDuration = drag.originalDuration - deltaTime;
+      if (newStart < 0) {
+        newDuration += newStart;
+        newStart = 0;
+      }
+      if (newDuration < 0.1) {
+        newStart = drag.originalStart + drag.originalDuration - 0.1;
+        newDuration = 0.1;
+      }
+      store.updateLayer(drag.layerId, {
+        startTime: newStart,
+        duration: newDuration,
+      });
+      return;
+    }
+
+    if (drag.type === "resize-end") {
+      if (drag.layerId === EFFECT_RANGE_LAYER_ID) {
+        let newDuration = drag.originalDuration + deltaTime;
+        newDuration = Math.max(
+          0.1,
+          Math.min(newDuration, timelineDuration - drag.originalStart),
+        );
+        store.setVideoState({
+          effectEndTime: drag.originalStart + newDuration,
+        });
+        return;
+      }
+
+      let newDuration = drag.originalDuration + deltaTime;
+      if (newDuration < 0.1) newDuration = 0.1;
+
+      const layer = currentLayers.find((item) => item.id === drag.layerId);
+      const sourceDuration = Number(layer?.data?.sourceDuration || 0);
+      if (
+        (layer?.type === "video" || layer?.type === "audio") &&
+        sourceDuration > 0
+      ) {
+        newDuration = Math.min(
+          newDuration,
+          Math.max(0.1, sourceDuration - drag.originalMediaStart),
+        );
+      }
+
+      store.updateLayer(drag.layerId, { duration: newDuration });
+    }
+  }, []);
+
+  const endDrag = useCallback(() => {
+    const pendingReorder = pendingSceneReorderRef.current;
+    pendingSceneReorderRef.current = null;
+    if (pendingReorder) {
+      reorderVideoScene(
+        pendingReorder.layerId,
+        pendingReorder.targetIndex,
+      );
+    }
+    dragRef.current = null;
+    setIsDragging(false);
+  }, [reorderVideoScene]);
+
+  useEffect(() => {
+    const onPointerMove = (event: PointerEvent) => {
+      if (!dragRef.current) return;
+      event.preventDefault();
+      applyDragAt(event.clientX, event.clientY);
+    };
+    const onPointerUp = () => {
+      if (!dragRef.current) return;
+      endDrag();
+    };
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+    };
+  }, [applyDragAt, endDrag]);
 
   const timelineRows = buildTimelineRows({
     layers,
@@ -258,6 +518,35 @@ export function Timeline() {
     effectStartTime,
     effectEndTime,
   });
+
+  useEffect(() => {
+    if (!selectedLayerId) {
+      if (
+        selectedSegmentId &&
+        !timelineRows.some((row) =>
+          row.segments.some((segment) => segment.id === selectedSegmentId),
+        )
+      ) {
+        setSelectedSegmentId(null);
+      }
+      return;
+    }
+
+    const matchingSegments = timelineRows.flatMap((row) =>
+      row.segments.filter((segment) => segment.layerId === selectedLayerId),
+    );
+    if (matchingSegments.length === 0) return;
+
+    const preferredSegment =
+      matchingSegments.find((segment) => segment.kind === "video") ||
+      matchingSegments[0];
+    if (
+      !selectedSegmentId ||
+      !matchingSegments.some((segment) => segment.id === selectedSegmentId)
+    ) {
+      setSelectedSegmentId(preferredSegment.id);
+    }
+  }, [selectedLayerId, selectedSegmentId, timelineRows]);
 
   const handleAddTextLayer = () => {
     addLayer({
@@ -319,286 +608,173 @@ export function Timeline() {
   // But we need to ensure local seek updates store. (setCurrentTime does that).
 
   // Interaction Handlers
-  const handleLayerMouseDown = (e: React.MouseEvent, layerId: string) => {
+  const handleLayerMouseDown = (
+    e: React.PointerEvent,
+    layerId: string,
+    segment?: TimelineSegment,
+  ) => {
+    if (e.button !== 0) return;
     e.stopPropagation();
+    e.preventDefault();
     const layer = layers.find((l) => l.id === layerId);
     if (!layer) return;
 
-    setDragState({
-      type: "move",
-      layerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      originalStart: layer.startTime || 0,
-      originalDuration: layer.duration || duration,
-      originalTrack: layer.track ?? 0,
-      originalMediaStart: layer.mediaStart || 0,
-    });
+    setSelectedSegmentId(segment?.id || layerId);
+    beginDrag(
+      {
+        type: "move",
+        layerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        trackWidth: 1,
+        originalStart: segment?.startTime ?? layer.startTime ?? 0,
+        originalDuration: segment?.duration ?? layer.duration ?? duration,
+        originalTrack: layer.track ?? 0,
+        originalMediaStart: layer.mediaStart || 0,
+      },
+      e.currentTarget as HTMLElement,
+      e.pointerId,
+    );
     pendingSceneReorderRef.current = null;
     selectLayer(layerId);
   };
 
-  const handleResizeStart = (
-    e: React.MouseEvent,
-    layerId: string,
-    side: "start" | "end",
-  ) => {
-    e.stopPropagation();
-    selectLayer(layerId);
-    const layer = layers.find((l) => l.id === layerId);
-    if (!layer) return;
-
-    setDragState({
-      type: side === "start" ? "resize-start" : "resize-end",
-      layerId,
-      startX: e.clientX,
-      startY: e.clientY,
-      originalStart: layer.startTime || 0,
-      originalDuration: layer.duration || duration,
-      originalTrack: layer.track ?? 0,
-      originalMediaStart: layer.mediaStart || 0,
-    });
-  };
-
-  const handleMouseMove = useCallback(
-    (e: MouseEvent | React.MouseEvent) => {
-      if (!dragState || !rulerRef.current) return;
-
-      const rect = rulerRef.current.getBoundingClientRect();
-      const totalWidthPixels = rect.width;
-      const deltaPixels = e.clientX - dragState.startX;
-      const deltaTime = (deltaPixels / totalWidthPixels) * duration;
-
-      if (dragState.type === "move") {
-        const layer = layers.find((item) => item.id === dragState.layerId);
-        if (dragState.layerId === EFFECT_RANGE_LAYER_ID) {
-          let newStart = dragState.originalStart + deltaTime;
-          newStart = Math.max(
-            0,
-            Math.min(newStart, duration - dragState.originalDuration),
-          );
-          setVideoState({
-            effectStartTime: newStart,
-            effectEndTime: newStart + dragState.originalDuration,
-          });
-          return;
-        }
-
-        if (layer?.type === "video") {
-          const draggedCenter =
-            dragState.originalStart +
-            dragState.originalDuration / 2 +
-            deltaTime;
-          const targetIndex = composition.scenes.reduce(
-            (closestIndex, scene, index) => {
-              const currentDistance = Math.abs(
-                draggedCenter -
-                  (composition.scenes[closestIndex]?.timelineStart || 0),
-              );
-              const nextDistance = Math.abs(
-                draggedCenter - scene.timelineStart,
-              );
-              return nextDistance < currentDistance ? index : closestIndex;
-            },
-            0,
-          );
-          pendingSceneReorderRef.current = {
-            layerId: dragState.layerId,
-            targetIndex,
-          };
-          return;
-        }
-
-        let newStart = dragState.originalStart + deltaTime;
-        // Clamp
-        newStart = Math.max(
-          0,
-          Math.min(newStart, duration - dragState.originalDuration),
-        );
-
-        const deltaY = e.clientY - dragState.startY;
-        const trackDelta = Math.round(deltaY / 56); // 48px height + 8px gap
-        const newTrack = Math.max(0, dragState.originalTrack + trackDelta);
-
-        updateLayer(dragState.layerId, {
-          startTime: newStart,
-          track: newTrack,
-        });
-      } else if (dragState.type === "row-resize" && dragState.rowId) {
-        const nextHeight = Math.min(
-          120,
-          Math.max(36, (dragState.originalRowHeight || 48) + (e.clientY - dragState.startY)),
-        );
-        setRowHeights((previous) => ({
-          ...previous,
-          [dragState.rowId!]: nextHeight,
-        }));
-      } else if (dragState.type === "resize-start") {
-        if (dragState.layerId === EFFECT_RANGE_LAYER_ID) {
-          const fixedEnd =
-            dragState.originalStart + dragState.originalDuration;
-          const newStart = Math.min(
-            fixedEnd - 0.1,
-            Math.max(0, dragState.originalStart + deltaTime),
-          );
-          setVideoState({
-            effectStartTime: newStart,
-            effectEndTime: fixedEnd,
-          });
-          return;
-        }
-
-        const layer = layers.find((l) => l.id === dragState.layerId);
-        if (layer && (layer.type === "video" || layer.type === "audio")) {
-          const fixedEnd =
-            dragState.originalStart + dragState.originalDuration;
-          const earliestTimelineStart = Math.max(
-            0,
-            dragState.originalStart - dragState.originalMediaStart,
-          );
-          const newStart = Math.min(
-            fixedEnd - 0.1,
-            Math.max(
-              earliestTimelineStart,
-              dragState.originalStart + deltaTime,
-            ),
-          );
-          const shift = newStart - dragState.originalStart;
-          updateLayer(dragState.layerId, {
-            startTime: newStart,
-            duration: fixedEnd - newStart,
-            mediaStart: Math.max(0, dragState.originalMediaStart + shift),
-          });
-        } else {
-          let newStart = dragState.originalStart + deltaTime;
-          let newDuration = dragState.originalDuration - deltaTime;
-
-          if (newStart < 0) {
-            newDuration += newStart;
-            newStart = 0;
-          }
-          if (newDuration < 0.1) {
-            newStart =
-              dragState.originalStart + dragState.originalDuration - 0.1;
-            newDuration = 0.1;
-          }
-          updateLayer(dragState.layerId, {
-            startTime: newStart,
-            duration: newDuration,
-          });
-        }
-      } else if (dragState.type === "resize-end") {
-        if (dragState.layerId === EFFECT_RANGE_LAYER_ID) {
-          let newDuration = dragState.originalDuration + deltaTime;
-          newDuration = Math.max(
-            0.1,
-            Math.min(newDuration, duration - dragState.originalStart),
-          );
-          setVideoState({
-            effectEndTime: dragState.originalStart + newDuration,
-          });
-          return;
-        }
-
-        let newDuration = dragState.originalDuration + deltaTime;
-        if (newDuration < 0.1) newDuration = 0.1;
-
-        const layer = layers.find((item) => item.id === dragState.layerId);
-        const sourceDuration = Number(layer?.data?.sourceDuration || 0);
-        if (
-          (layer?.type === "video" || layer?.type === "audio") &&
-          sourceDuration > 0
-        ) {
-          newDuration = Math.min(
-            newDuration,
-            Math.max(0.1, sourceDuration - dragState.originalMediaStart),
-          );
-        }
-
-        updateLayer(dragState.layerId, { duration: newDuration });
-      }
-    },
-    [
-      composition.scenes,
-      dragState,
-      duration,
-      updateLayer,
-      layers,
-      setVideoState,
-    ],
-  );
-
   const handleSegmentMouseDown = (
-    event: React.MouseEvent,
+    event: React.PointerEvent,
     segment: TimelineSegment,
   ) => {
+    if (event.button !== 0) return;
+    setSelectedSegmentId(segment.id);
+
+    if (segment.kind === "transition" && segment.layerId) {
+      event.stopPropagation();
+      selectLayer(segment.layerId);
+      return;
+    }
+
     if (segment.kind === "effects" && segment.layerId === EFFECT_RANGE_LAYER_ID) {
       event.stopPropagation();
-      setDragState({
-        type: "move",
-        layerId: EFFECT_RANGE_LAYER_ID,
-        startX: event.clientX,
-        startY: event.clientY,
-        originalStart: segment.startTime,
-        originalDuration: segment.duration,
-        originalTrack: 0,
-        originalMediaStart: 0,
-      });
+      selectLayer(null);
+      beginDrag(
+        {
+          type: "move",
+          layerId: EFFECT_RANGE_LAYER_ID,
+          startX: event.clientX,
+          startY: event.clientY,
+          trackWidth: 1,
+          originalStart: segment.startTime,
+          originalDuration: segment.duration,
+          originalTrack: 0,
+          originalMediaStart: 0,
+        },
+        event.currentTarget as HTMLElement,
+        event.pointerId,
+      );
       return;
     }
 
     if (!segment.layerId || segment.draggable === false) {
-      if (segment.layerId) selectLayer(segment.layerId);
+      if (segment.layerId && segment.layerId !== EFFECT_RANGE_LAYER_ID) {
+        selectLayer(segment.layerId);
+      } else {
+        selectLayer(null);
+      }
       event.stopPropagation();
       return;
     }
-    handleLayerMouseDown(event, segment.layerId);
+    handleLayerMouseDown(event, segment.layerId, segment);
   };
 
   const handleSegmentResizeStart = (
-    event: React.MouseEvent,
+    event: React.PointerEvent,
     segment: TimelineSegment,
     side: "start" | "end",
   ) => {
+    if (event.button !== 0) return;
     event.stopPropagation();
+    event.preventDefault();
+
+    setSelectedSegmentId(segment.id);
+
+    const baseDrag = {
+      type: side === "start" ? ("resize-start" as const) : ("resize-end" as const),
+      startX: event.clientX,
+      startY: event.clientY,
+      trackWidth: 1,
+      originalStart: segment.startTime,
+      originalDuration: segment.duration,
+      originalTrack: 0,
+      originalMediaStart: 0,
+    };
 
     if (segment.kind === "effects" && segment.layerId === EFFECT_RANGE_LAYER_ID) {
-      setDragState({
-        type: side === "start" ? "resize-start" : "resize-end",
-        layerId: EFFECT_RANGE_LAYER_ID,
-        startX: event.clientX,
-        startY: event.clientY,
-        originalStart: segment.startTime,
-        originalDuration: segment.duration,
-        originalTrack: 0,
-        originalMediaStart: 0,
-      });
+      selectLayer(null);
+      beginDrag(
+        { ...baseDrag, layerId: EFFECT_RANGE_LAYER_ID },
+        event.currentTarget as HTMLElement,
+        event.pointerId,
+      );
+      return;
+    }
+
+    if (segment.kind === "transition" && segment.layerId) {
+      selectLayer(segment.layerId);
+      beginDrag(
+        {
+          ...baseDrag,
+          layerId: segment.layerId,
+          segmentKind: "transition",
+          transitionSide: segment.transitionSide,
+          transitionType: segment.transitionType,
+        },
+        event.currentTarget as HTMLElement,
+        event.pointerId,
+      );
       return;
     }
 
     if (!segment.layerId || segment.resizable === false) return;
-    handleResizeStart(event, segment.layerId, side);
+
+    const layer = layers.find((item) => item.id === segment.layerId);
+    selectLayer(segment.layerId);
+    beginDrag(
+      {
+        ...baseDrag,
+        layerId: segment.layerId,
+        originalMediaStart: layer?.mediaStart || 0,
+        originalTrack: layer?.track ?? 0,
+        segmentKind: segment.kind,
+      },
+      event.currentTarget as HTMLElement,
+      event.pointerId,
+    );
   };
 
   const handleRowResizeStart = (
-    event: React.MouseEvent,
+    event: React.PointerEvent,
     rowId: string,
     currentHeight: number,
   ) => {
+    if (event.button !== 0) return;
     event.stopPropagation();
     event.preventDefault();
-    setDragState({
-      type: "row-resize",
-      layerId: rowId,
-      rowId,
-      startX: event.clientX,
-      startY: event.clientY,
-      originalStart: 0,
-      originalDuration: 0,
-      originalTrack: 0,
-      originalMediaStart: 0,
-      originalRowHeight: currentHeight,
-    });
+    beginDrag(
+      {
+        type: "row-resize",
+        layerId: rowId,
+        rowId,
+        startX: event.clientX,
+        startY: event.clientY,
+        trackWidth: 1,
+        originalStart: 0,
+        originalDuration: 0,
+        originalTrack: 0,
+        originalMediaStart: 0,
+        originalRowHeight: currentHeight,
+      },
+      event.currentTarget as HTMLElement,
+      event.pointerId,
+    );
   };
 
   const setSelectedTransition = (
@@ -612,32 +788,13 @@ export function Timeline() {
     });
   };
 
-  const handleMouseUp = useCallback(() => {
-    const pendingReorder = pendingSceneReorderRef.current;
-    pendingSceneReorderRef.current = null;
-    if (pendingReorder) {
-      reorderVideoScene(
-        pendingReorder.layerId,
-        pendingReorder.targetIndex,
-      );
-    }
-    setDragState(null);
-  }, [reorderVideoScene]);
-
-  useEffect(() => {
-    if (dragState) {
-      const onMove = (e: MouseEvent) => handleMouseMove(e);
-      window.addEventListener("mousemove", onMove);
-      window.addEventListener("mouseup", handleMouseUp);
-      return () => {
-        window.removeEventListener("mousemove", onMove);
-        window.removeEventListener("mouseup", handleMouseUp);
-      };
-    }
-  }, [dragState, handleMouseMove, handleMouseUp]);
-
   return (
-    <div className="w-full h-full flex flex-col bg-white text-gray-900 border-t border-gray-200">
+    <div
+      className={cn(
+        "w-full h-full flex flex-col bg-white text-gray-900 border-t border-gray-200",
+        isDragging && "cursor-ew-resize select-none",
+      )}
+    >
       {/* Time Controls */}
       <div className="h-12 border-b border-gray-200 flex items-center justify-between px-4 bg-gray-50/50">
         <div className="flex items-center gap-4">
@@ -793,6 +950,7 @@ export function Timeline() {
               <div className="w-24 flex-shrink-0 border-b border-gray-200/50 sticky left-0 z-40 bg-gray-50/95" />
               <div
                 ref={rulerRef}
+                data-timeline-track
                 className="flex-1 border-b border-gray-200/50 flex items-end cursor-pointer relative"
                 onClick={(e) => {
                   const rect = e.currentTarget.getBoundingClientRect();
@@ -842,6 +1000,7 @@ export function Timeline() {
                 duration={duration}
                 rowHeight={rowHeights[row.id] ?? 48}
                 selectedLayerId={selectedLayerId}
+                selectedSegmentId={selectedSegmentId}
                 onSegmentMouseDown={handleSegmentMouseDown}
                 onSegmentResizeStart={handleSegmentResizeStart}
                 onRowResizeStart={handleRowResizeStart}
@@ -891,6 +1050,7 @@ function TimelineTrackRow({
   duration,
   rowHeight,
   selectedLayerId,
+  selectedSegmentId,
   onSegmentMouseDown,
   onSegmentResizeStart,
   onRowResizeStart,
@@ -899,24 +1059,25 @@ function TimelineTrackRow({
   duration: number;
   rowHeight: number;
   selectedLayerId: string | null;
+  selectedSegmentId: string | null;
   onSegmentMouseDown: (
-    event: React.MouseEvent,
+    event: React.PointerEvent,
     segment: TimelineSegment,
   ) => void;
   onSegmentResizeStart: (
-    event: React.MouseEvent,
+    event: React.PointerEvent,
     segment: TimelineSegment,
     side: "start" | "end",
   ) => void;
   onRowResizeStart: (
-    event: React.MouseEvent,
+    event: React.PointerEvent,
     rowId: string,
     currentHeight: number,
   ) => void;
 }) {
   const layers = useEditorStore.getState().getLayers();
   const isRowSelected = row.segments.some(
-    (segment) => segment.layerId && segment.layerId === selectedLayerId,
+    (segment) => segment.id === selectedSegmentId,
   );
 
   const RowIcon =
@@ -926,7 +1087,9 @@ function TimelineTrackRow({
         ? Music
         : row.kind === "effects"
           ? Sparkles
-          : Layers;
+          : row.kind === "transitions"
+            ? ArrowLeftRight
+            : Layers;
 
   const rowAccent =
     row.kind === "video"
@@ -935,7 +1098,9 @@ function TimelineTrackRow({
         ? "text-emerald-500"
         : row.kind === "effects"
           ? "text-violet-500"
-          : "text-orange-500";
+          : row.kind === "transitions"
+            ? "text-amber-500"
+            : "text-orange-500";
 
   return (
     <div className="group/track relative flex" style={{ height: rowHeight }}>
@@ -951,13 +1116,12 @@ function TimelineTrackRow({
         </div>
       </div>
 
-      <div className="relative flex-1 overflow-hidden rounded-lg border border-gray-100/50 bg-white/30 shadow-sm transition-colors hover:bg-white/50">
+      <div
+        data-timeline-track
+        className="relative flex-1 overflow-hidden rounded-lg border border-gray-100/50 bg-white/30 shadow-sm transition-colors hover:bg-white/50"
+      >
         {row.segments.map((segment) => {
-          const isSelected =
-            segment.layerId === EFFECT_RANGE_LAYER_ID
-              ? false
-              : Boolean(segment.layerId) &&
-                segment.layerId === selectedLayerId;
+          const isSelected = segment.id === selectedSegmentId;
           const segmentWidth = Math.max(
             0,
             (segment.duration / duration) * 100,
@@ -975,29 +1139,31 @@ function TimelineTrackRow({
             <div
               key={segment.id}
               className={cn(
-                "absolute top-1 bottom-1 flex cursor-pointer items-center overflow-hidden rounded-md border px-2 text-[10px] shadow-md transition-all select-none",
+                "group/segment absolute top-1 bottom-1 flex cursor-pointer items-center overflow-visible rounded-md border px-2 text-[10px] shadow-md transition-all select-none",
                 isSelected
                   ? "z-10 brightness-105 ring-2 ring-blue-500/50"
                   : "opacity-90 hover:opacity-100 hover:ring-1 hover:ring-black/5",
                 segment.kind === "video" &&
-                  "border-blue-200 bg-blue-100 text-blue-800",
+                  "overflow-hidden border-blue-200 bg-blue-100 text-blue-800",
                 (segment.kind === "audio" || segment.kind === "video-sound") &&
-                  "border-emerald-200 bg-emerald-100 text-emerald-800",
+                  "overflow-hidden border-emerald-200 bg-emerald-100 text-emerald-800",
                 segment.kind === "effects" &&
                   (segment.label === "No effects applied"
-                    ? "border-dashed border-violet-200 bg-violet-50/70 text-violet-400"
-                    : "border-violet-200 bg-gradient-to-r from-violet-100 to-fuchsia-100 text-violet-800"),
+                    ? "overflow-hidden border-dashed border-violet-200 bg-violet-50/70 text-violet-400"
+                    : "overflow-hidden border-violet-200 bg-gradient-to-r from-violet-100 to-fuchsia-100 text-violet-800"),
+                segment.kind === "transition" &&
+                  "border-amber-200 bg-amber-50 text-amber-900",
                 segment.kind === "text" &&
-                  "border-purple-200 bg-purple-100 text-purple-800",
+                  "overflow-hidden border-purple-200 bg-purple-100 text-purple-800",
                 (segment.kind === "image" || segment.kind === "overlay") &&
-                  "border-orange-200 bg-orange-100 text-orange-800",
+                  "overflow-hidden border-orange-200 bg-orange-100 text-orange-800",
               )}
               style={{
                 left: `${segmentLeft}%`,
                 width: `${segmentWidth}%`,
                 minWidth: segment.kind === "effects" ? undefined : "28px",
               }}
-              onMouseDown={(event) => onSegmentMouseDown(event, segment)}
+              onPointerDown={(event) => onSegmentMouseDown(event, segment)}
             >
               {segment.kind === "video" && <VideoFrameStrip url={videoUrl} />}
               {(segment.kind === "audio" || segment.kind === "video-sound") && (
@@ -1007,46 +1173,64 @@ function TimelineTrackRow({
                 segment.label !== "No effects applied" && (
                   <Sparkles className="pointer-events-none absolute left-2 h-3 w-3 text-violet-500/70" />
                 )}
+              {segment.kind === "transition" && (
+                <ArrowLeftRight className="pointer-events-none absolute left-1.5 h-3 w-3 text-amber-600/80" />
+              )}
 
               {segment.resizable !== false && (
                 <div
                   className={cn(
-                    "absolute top-0 bottom-0 left-0 z-20 flex w-4 cursor-ew-resize items-center justify-center transition-opacity",
+                    "absolute top-0 bottom-0 left-0 z-50 flex w-6 cursor-ew-resize items-center justify-center transition-opacity pointer-events-auto",
                     isSelected
                       ? "opacity-100"
-                      : "opacity-0 group-hover/track:opacity-100",
+                      : "opacity-80 group-hover/segment:opacity-100",
                   )}
-                  onMouseDown={(event) =>
-                    onSegmentResizeStart(event, segment, "start")
-                  }
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    onSegmentResizeStart(event, segment, "start");
+                  }}
+                  title="Trim start"
                 >
-                  <div className="pointer-events-none z-30 flex h-1/2 min-h-[16px] w-1.5 items-center justify-center rounded-full border border-gray-300 bg-white shadow-sm">
-                    <div className="h-2 w-[1px] bg-gray-400" />
+                  <div className="pointer-events-none flex h-2/3 min-h-[20px] w-2 items-center justify-center rounded-full border-2 border-blue-400 bg-white shadow-md">
+                    <div className="h-3 w-[2px] rounded-full bg-blue-500" />
                   </div>
                 </div>
               )}
 
-              <span className="pointer-events-none z-0 flex min-w-0 items-center gap-1 truncate px-3 font-bold whitespace-nowrap">
+              <span className="pointer-events-none z-0 flex min-w-0 items-center gap-1 truncate px-5 font-bold whitespace-nowrap">
                 {segment.kind === "video-sound" && (
                   <Music className="h-3 w-3 shrink-0" />
                 )}
-                {segment.label}
+                {segment.kind === "transition" ? (
+                  <span className="flex min-w-0 flex-col leading-tight">
+                    <span className="truncate">{segment.label}</span>
+                    {segment.linkedLayerName && (
+                      <span className="truncate text-[8px] font-medium normal-case opacity-70">
+                        → {segment.linkedLayerName}
+                      </span>
+                    )}
+                  </span>
+                ) : (
+                  segment.label
+                )}
               </span>
 
               {segment.resizable !== false && (
                 <div
                   className={cn(
-                    "absolute top-0 right-0 bottom-0 z-20 flex w-4 cursor-ew-resize items-center justify-center transition-opacity",
+                    "absolute top-0 right-0 bottom-0 z-50 flex w-6 cursor-ew-resize items-center justify-center transition-opacity pointer-events-auto",
                     isSelected
                       ? "opacity-100"
-                      : "opacity-0 group-hover/track:opacity-100",
+                      : "opacity-80 group-hover/segment:opacity-100",
                   )}
-                  onMouseDown={(event) =>
-                    onSegmentResizeStart(event, segment, "end")
-                  }
+                  onPointerDown={(event) => {
+                    event.stopPropagation();
+                    onSegmentResizeStart(event, segment, "end");
+                  }}
+                  title="Trim end"
                 >
-                  <div className="pointer-events-none z-30 flex h-1/2 min-h-[16px] w-1.5 items-center justify-center rounded-full border border-gray-300 bg-white shadow-sm">
-                    <div className="h-2 w-[1px] bg-gray-400" />
+                  <div className="pointer-events-none flex h-2/3 min-h-[20px] w-2 items-center justify-center rounded-full border-2 border-blue-400 bg-white shadow-md">
+                    <div className="h-3 w-[2px] rounded-full bg-blue-500" />
                   </div>
                 </div>
               )}
@@ -1058,7 +1242,7 @@ function TimelineTrackRow({
       <button
         type="button"
         aria-label={`Resize ${row.label} track height`}
-        onMouseDown={(event) => onRowResizeStart(event, row.id, rowHeight)}
+        onPointerDown={(event) => onRowResizeStart(event, row.id, rowHeight)}
         className="absolute right-0 -bottom-1 left-24 z-30 h-2 cursor-row-resize opacity-0 transition-opacity group-hover/track:opacity-100"
       >
         <span className="mx-auto block h-1 w-10 rounded-full bg-gray-300/80" />

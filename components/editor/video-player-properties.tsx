@@ -40,6 +40,7 @@ export function VideoPlayerProperties() {
   const activePageId = useEditorStore((state) => state.canvas.activePageId);
   const setVideoState = useEditorStore((state) => state.setVideoState);
   const deleteLayer = useEditorStore((state) => state.deleteLayer);
+  const updateLayer = useEditorStore((state) => state.updateLayer);
   const selectedLayerId = useEditorStore(
     (state) => state.canvas.selectedLayerId,
   );
@@ -51,6 +52,29 @@ export function VideoPlayerProperties() {
   const selectedLayer = layers.find((layer) => layer.id === selectedLayerId);
   const selectedVideoLayer =
     selectedLayer?.type === "video" ? selectedLayer : undefined;
+  const selectedClipStart = Number(selectedLayer?.startTime || 0);
+  const selectedClipDuration = Math.max(
+    0.1,
+    Number(selectedLayer?.duration || 0.1),
+  );
+  const selectedClipEnd = selectedClipStart + selectedClipDuration;
+  const selectedSourceDuration = Math.max(
+    0.1,
+    Number(
+      selectedLayer?.data?.sourceDuration ||
+        (selectedLayer?.type === "video" ? duration : 0) ||
+        duration,
+    ),
+  );
+  const selectedMediaStart = Math.max(0, Number(selectedLayer?.mediaStart || 0));
+  const selectedMediaEnd = Math.min(
+    selectedSourceDuration,
+    selectedMediaStart + selectedClipDuration,
+  );
+  const hasTimelineLayer =
+    Boolean(selectedLayer) &&
+    selectedLayer?.startTime !== undefined &&
+    selectedLayer?.duration !== undefined;
 
   const setTransition = (side: "before" | "after", type: SceneTransitionType) => {
     if (!selectedVideoLayer) return;
@@ -315,35 +339,113 @@ export function VideoPlayerProperties() {
 
       <section className="space-y-4 px-4">
         <h3 className="border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
-          Transitions
+          Layer Transitions
         </h3>
         {selectedVideoLayer ? (
           <div className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
+            <p className="text-[10px] font-bold text-white/70">
+              Clip: {selectedVideoLayer.name}
+            </p>
             <TransitionSelect
-              label="Before Clip"
+              label="Transition In (before clip)"
               value={selectedVideoLayer.data?.transitionBefore?.type || "none"}
               onChange={(type) => setTransition("before", type)}
             />
             <TransitionSelect
-              label="After Clip"
+              label="Transition Out (after clip)"
               value={selectedVideoLayer.data?.transitionAfter?.type || "none"}
               onChange={(type) => setTransition("after", type)}
             />
             <p className="text-[9px] leading-relaxed text-white/35">
-              Applies when this clip meets the previous or next video on the
-              timeline. Use two or more clips to preview the effect.
+              Assigned transitions appear on the Transitions track in the
+              timeline. Click a transition block there to edit the linked clip.
             </p>
           </div>
         ) : (
           <p className="rounded-xl border border-dashed border-white/10 bg-[#18181b]/30 px-4 py-6 text-center text-[10px] leading-relaxed text-white/40">
-            Select a video clip on the timeline to choose transitions.
+            Select a video clip or a transition block on the timeline to set
+            per-layer transitions.
           </p>
         )}
       </section>
 
+      {hasTimelineLayer && selectedLayer && (
+        <section className="space-y-4 px-4">
+          <h3 className="border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
+            Clip Trim — {selectedLayer.name}
+          </h3>
+          <div className="space-y-6 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
+            <TrimSlider
+              label="Timeline Start"
+              value={selectedClipStart}
+              displayValue={formatTime(selectedClipStart)}
+              max={Math.max(0.1, selectedClipEnd - 0.1)}
+              onChange={(startTime) => {
+                updateLayer(selectedLayer.id, {
+                  startTime,
+                  duration: Math.max(0.1, selectedClipEnd - startTime),
+                });
+              }}
+            />
+            <TrimSlider
+              label="Timeline End"
+              value={selectedClipEnd}
+              displayValue={formatTime(selectedClipEnd)}
+              min={selectedClipStart + 0.1}
+              max={Math.max(selectedClipStart + 0.1, duration)}
+              tone="text-red-400"
+              onChange={(endTime) => {
+                updateLayer(selectedLayer.id, {
+                  duration: Math.max(0.1, endTime - selectedClipStart),
+                });
+              }}
+            />
+            {(selectedLayer.type === "video" ||
+              selectedLayer.type === "audio") && (
+              <>
+                <TrimSlider
+                  label="Source In"
+                  value={selectedMediaStart}
+                  displayValue={formatTime(selectedMediaStart)}
+                  max={Math.max(0, selectedMediaEnd - 0.1)}
+                  onChange={(mediaStart) => {
+                    const shift = mediaStart - selectedMediaStart;
+                    updateLayer(selectedLayer.id, {
+                      mediaStart: Math.max(0, mediaStart),
+                      startTime: selectedClipStart + shift,
+                      duration: Math.max(
+                        0.1,
+                        selectedClipDuration - shift,
+                      ),
+                    });
+                  }}
+                />
+                <TrimSlider
+                  label="Source Out"
+                  value={selectedMediaEnd}
+                  displayValue={formatTime(selectedMediaEnd)}
+                  min={selectedMediaStart + 0.1}
+                  max={selectedSourceDuration}
+                  tone="text-emerald-400"
+                  onChange={(mediaEnd) => {
+                    updateLayer(selectedLayer.id, {
+                      duration: Math.max(0.1, mediaEnd - selectedMediaStart),
+                    });
+                  }}
+                />
+              </>
+            )}
+            <p className="text-[9px] leading-relaxed text-white/35">
+              Drag the white handles on the timeline clip, or use these sliders
+              to trim this layer.
+            </p>
+          </div>
+        </section>
+      )}
+
       <section className="space-y-4 px-4">
         <h3 className="border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
-          Primary Trim
+          Export Range
         </h3>
         <div className="space-y-8 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
           <TrimSlider

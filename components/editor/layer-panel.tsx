@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useState } from "react";
-import { commitCanvasHistory } from "@/lib/editor-actions";
+import { commitCanvasHistory, getActiveFabricCanvas } from "@/lib/editor-actions";
 
 export function LayerPanel() {
   const {
@@ -40,7 +40,7 @@ export function LayerPanel() {
     const nextVisible = !currentVisible;
     updateLayer(layerId, { visible: nextVisible });
 
-    const { fabricCanvas } = useEditorStore.getState().canvas;
+    const fabricCanvas = getActiveFabricCanvas();
     if (fabricCanvas && layer?.objectId) {
       const obj = fabricCanvas
         .getObjects()
@@ -59,7 +59,7 @@ export function LayerPanel() {
     const nextLocked = !currentLocked;
     updateLayer(layerId, { locked: nextLocked });
 
-    const { fabricCanvas } = useEditorStore.getState().canvas;
+    const fabricCanvas = getActiveFabricCanvas();
     if (fabricCanvas && layer?.objectId) {
       const obj = fabricCanvas
         .getObjects()
@@ -85,7 +85,7 @@ export function LayerPanel() {
 
   const handleSelectLayer = (layerId: string) => {
     selectLayer(layerId);
-    const { fabricCanvas } = useEditorStore.getState().canvas;
+    const fabricCanvas = getActiveFabricCanvas();
     if (fabricCanvas) {
       const layer = layers.find((l) => l.id === layerId);
       if (layer) {
@@ -144,21 +144,21 @@ export function LayerPanel() {
                 onDuplicate={() => duplicateLayer(layer.id)}
                 onDelete={() => {
                   deleteLayer(layer.id);
-                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                  commitCanvasHistory(getActiveFabricCanvas());
                 }}
                 onMoveUp={() => {
                   reorderLayer(layer.id, "up");
-                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                  commitCanvasHistory(getActiveFabricCanvas());
                 }}
                 onMoveDown={() => {
                   reorderLayer(layer.id, "down");
-                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                  commitCanvasHistory(getActiveFabricCanvas());
                 }}
                 onRename={(name) => renameLayer(layer.id, name)}
                 onReorder={reorderLayer}
                 onMove={(draggedId, targetId, position) => {
                   moveLayer(draggedId, targetId, position);
-                  commitCanvasHistory(useEditorStore.getState().canvas.fabricCanvas);
+                  commitCanvasHistory(getActiveFabricCanvas());
                 }}
               />
             ))}

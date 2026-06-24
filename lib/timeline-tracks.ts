@@ -5,6 +5,11 @@ import { IMAGE_PRESETS } from './editor-actions'
 import type { VideoFilters } from './video-filters'
 import { DEFAULT_VIDEO_FILTERS } from './video-filters'
 import type { ImagePresetId } from './editor-actions'
+import { SCENE_TRANSITION_OPTIONS } from './video-transitions'
+
+const transitionLabel = (type: string) =>
+  SCENE_TRANSITION_OPTIONS.find((option) => option.value === type)?.label ||
+  type.replace(/-/g, ' ')
 
 export type TimelineSegmentKind =
   | 'video'
@@ -14,6 +19,7 @@ export type TimelineSegmentKind =
   | 'text'
   | 'image'
   | 'overlay'
+  | 'transition'
 
 export interface TimelineSegment {
   id: string
@@ -26,9 +32,17 @@ export interface TimelineSegment {
   selectable?: boolean
   draggable?: boolean
   resizable?: boolean
+  transitionSide?: 'before' | 'after'
+  transitionType?: string
+  linkedLayerName?: string
 }
 
-export type TimelineRowKind = 'video' | 'audio' | 'effects' | 'overlay'
+export type TimelineRowKind =
+  | 'video'
+  | 'audio'
+  | 'effects'
+  | 'overlay'
+  | 'transitions'
 
 export interface TimelineRow {
   id: string
@@ -98,6 +112,66 @@ export const buildTimelineRows = ({
     })),
     addable: true,
   })
+
+  const transitionSegments: TimelineSegment[] = []
+  composition.scenes.forEach((scene, index) => {
+    const layerName = scene.layer.name || 'Video'
+    const before = scene.transitionBefore
+    if (before.type !== 'none' && before.duration > 0) {
+      const overlapStart = Math.max(
+        0,
+        scene.timelineStart - before.duration,
+      )
+      transitionSegments.push({
+        id: `transition-before-${scene.id}`,
+        kind: 'transition',
+        label: `${index === 0 ? 'Open' : 'In'}: ${transitionLabel(before.type)}`,
+        startTime: overlapStart,
+        duration: before.duration,
+        layerId: scene.layer.id,
+        virtual: true,
+        selectable: true,
+        draggable: false,
+        resizable: true,
+        transitionSide: 'before',
+        transitionType: before.type,
+        linkedLayerName: layerName,
+      })
+    }
+
+    const after = scene.transitionAfter
+    if (after.type !== 'none' && after.duration > 0) {
+      const overlapStart = Math.max(
+        0,
+        scene.timelineEnd - after.duration,
+      )
+      transitionSegments.push({
+        id: `transition-after-${scene.id}`,
+        kind: 'transition',
+        label: `Out: ${transitionLabel(after.type)}`,
+        startTime: overlapStart,
+        duration: after.duration,
+        layerId: scene.layer.id,
+        virtual: true,
+        selectable: true,
+        draggable: false,
+        resizable: true,
+        transitionSide: 'after',
+        transitionType: after.type,
+        linkedLayerName: layerName,
+      })
+    }
+  })
+
+  if (transitionSegments.length > 0) {
+    rows.push({
+      id: 'row-transitions',
+      kind: 'transitions',
+      label: 'Transitions',
+      trackIndex: 0.5,
+      segments: transitionSegments,
+    })
+  }
 
   const soundSegments: TimelineSegment[] = []
 

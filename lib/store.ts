@@ -800,6 +800,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       const shouldSynchronizeScenes =
         currentLayer.type === 'video' &&
+        !(
+          (updates.duration !== undefined ||
+            updates.mediaStart !== undefined) &&
+          updates.data === undefined &&
+          updates.track === undefined &&
+          updates.visible === undefined &&
+          updates.startTime === undefined
+        ) &&
         (updates.startTime !== undefined ||
           updates.duration !== undefined ||
           updates.mediaStart !== undefined ||
