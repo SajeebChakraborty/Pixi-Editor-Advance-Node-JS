@@ -167,6 +167,8 @@ export interface VideoState {
   filters: VideoFilters
   filterPreset: ImagePresetId
   filterPresetIntensity: number
+  effectStartTime: number
+  effectEndTime: number
 }
 
 export type EditorTool = 'select' | 'hand' | 'text' | 'circle' | 'square' | 'star' | 'pen' | 'arrow'
@@ -435,6 +437,8 @@ const initialVideoState: VideoState = {
   filters: { ...DEFAULT_VIDEO_FILTERS },
   filterPreset: 'none',
   filterPresetIntensity: 100,
+  effectStartTime: 0,
+  effectEndTime: 0,
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({

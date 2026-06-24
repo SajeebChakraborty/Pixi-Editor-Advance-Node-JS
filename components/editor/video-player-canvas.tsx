@@ -31,6 +31,7 @@ import {
 import {
   applyResolvedFramePresentation,
   buildVideoFilterCss,
+  isEffectActiveAtTime,
 } from "@/lib/video-filters";
 
 export function VideoPlayerCanvas() {
@@ -69,11 +70,32 @@ export function VideoPlayerCanvas() {
     playbackRate,
     filters,
   } = videoState;
+  const effectStartTime = videoState.effectStartTime ?? 0;
+  const effectEndTime = videoState.effectEndTime ?? 0;
   const composition = useMemo(
     () => buildVideoComposition(getLayers()),
     [getLayers, globalCanvas.pages, globalCanvas.activePageId],
   );
   const filterCss = useMemo(() => buildVideoFilterCss(filters), [filters]);
+  const activeFilterCss = useMemo(() => {
+    if (
+      !isEffectActiveAtTime(
+        currentTime,
+        effectStartTime,
+        effectEndTime,
+        composition.duration,
+      )
+    ) {
+      return buildVideoFilterCss();
+    }
+    return filterCss;
+  }, [
+    composition.duration,
+    currentTime,
+    effectEndTime,
+    effectStartTime,
+    filterCss,
+  ]);
   const audioLayers = useMemo(
     () => getLayers().filter((layer) => layer.type === "audio"),
     [getLayers, globalCanvas.pages, globalCanvas.activePageId],
@@ -287,7 +309,7 @@ export function VideoPlayerCanvas() {
         syncPlayback();
       }
 
-      applyResolvedFramePresentation(video, frame, filterCss);
+      applyResolvedFramePresentation(video, frame, activeFilterCss);
       video.style.display = "block";
       video.muted =
         isMuted || Boolean(linkedAudio && !linkedAudio.allowNativeAudio);
@@ -321,7 +343,7 @@ export function VideoPlayerCanvas() {
     playbackRate,
     videoUrl,
     volume,
-    filterCss,
+    activeFilterCss,
   ]);
 
   useEffect(() => {

@@ -20,6 +20,8 @@ import {
   Plus,
   Trash2,
   Combine,
+  Sparkles,
+  Layers,
 } from "lucide-react";
 import { useRef, useState, useEffect, useCallback } from "react";
 import { cn } from "@/lib/utils";
@@ -34,6 +36,13 @@ import {
   type SceneTransitionType,
 } from "@/lib/video-composition";
 import { SCENE_TRANSITION_OPTIONS } from "@/lib/video-transitions";
+import {
+  buildTimelineRows,
+  EFFECT_RANGE_LAYER_ID,
+  getNextOverlayTrack,
+  type TimelineRow,
+  type TimelineSegment,
+} from "@/lib/timeline-tracks";
 
 const videoFrameCache = new Map<string, Promise<string[]>>();
 
@@ -211,14 +220,16 @@ export function Timeline() {
     targetIndex: number;
   } | null>(null);
   const [dragState, setDragState] = useState<{
-    type: "move" | "resize-start" | "resize-end";
+    type: "move" | "resize-start" | "resize-end" | "row-resize";
     layerId: string;
+    rowId?: string;
     startX: number;
     startY: number;
     originalStart: number;
     originalDuration: number;
     originalTrack: number;
     originalMediaStart: number;
+    originalRowHeight?: number;
   } | null>(null);
 
   const duration = Math.max(
@@ -230,25 +241,51 @@ export function Timeline() {
     duration,
   );
   const isPlaying = videoState.isPlaying;
+  const filterPreset = videoState.filterPreset;
+  const filterPresetIntensity = videoState.filterPresetIntensity;
+  const videoFilters = videoState.filters;
+  const effectStartTime = videoState.effectStartTime ?? 0;
+  const effectEndTime = videoState.effectEndTime ?? 0;
 
-  const tracksMap = new Map<number, typeof layers>();
-  let nextTrack = 0;
+  const [rowHeights, setRowHeights] = useState<Record<string, number>>({});
 
-  layers.forEach((layer) => {
-    let t = layer.track;
-    if (typeof t !== "number") {
-      t = nextTrack;
-      nextTrack++;
-    } else {
-      nextTrack = Math.max(nextTrack, t + 1);
-    }
-    if (!tracksMap.has(t)) {
-      tracksMap.set(t, []);
-    }
-    tracksMap.get(t)!.push(layer);
+  const timelineRows = buildTimelineRows({
+    layers,
+    composition,
+    filterPreset: filterPreset || "none",
+    filterPresetIntensity: filterPresetIntensity ?? 100,
+    filters: videoFilters,
+    effectStartTime,
+    effectEndTime,
   });
 
-  const trackIndices = Array.from(tracksMap.keys()).sort((a, b) => a - b);
+  const handleAddTextLayer = () => {
+    addLayer({
+      type: "text",
+      name: "Text Layer",
+      locked: false,
+      visible: true,
+      startTime: currentTime,
+      duration: Math.max(1, duration - currentTime),
+      track: getNextOverlayTrack(layers),
+      data: {
+        content: "Your Text Here",
+        fontFamily: "Arial",
+        fontWeight: "bold",
+        fill: "#ffffff",
+        fontSize: 48,
+      },
+    });
+    toast.success("Text layer added to timeline");
+  };
+
+  const handleAddAudioLayer = () => {
+    toast.info("Open the Audio tab to upload or add background music");
+  };
+
+  const handleAddOverlayLayer = () => {
+    toast.info("Open the Photos tab to add an image overlay to the timeline");
+  };
 
   const setCurrentTime = (time: number) => {
     if (!Number.isFinite(time)) return;
@@ -334,6 +371,19 @@ export function Timeline() {
 
       if (dragState.type === "move") {
         const layer = layers.find((item) => item.id === dragState.layerId);
+        if (dragState.layerId === EFFECT_RANGE_LAYER_ID) {
+          let newStart = dragState.originalStart + deltaTime;
+          newStart = Math.max(
+            0,
+            Math.min(newStart, duration - dragState.originalDuration),
+          );
+          setVideoState({
+            effectStartTime: newStart,
+            effectEndTime: newStart + dragState.originalDuration,
+          });
+          return;
+        }
+
         if (layer?.type === "video") {
           const draggedCenter =
             dragState.originalStart +
@@ -374,7 +424,30 @@ export function Timeline() {
           startTime: newStart,
           track: newTrack,
         });
+      } else if (dragState.type === "row-resize" && dragState.rowId) {
+        const nextHeight = Math.min(
+          120,
+          Math.max(36, (dragState.originalRowHeight || 48) + (e.clientY - dragState.startY)),
+        );
+        setRowHeights((previous) => ({
+          ...previous,
+          [dragState.rowId!]: nextHeight,
+        }));
       } else if (dragState.type === "resize-start") {
+        if (dragState.layerId === EFFECT_RANGE_LAYER_ID) {
+          const fixedEnd =
+            dragState.originalStart + dragState.originalDuration;
+          const newStart = Math.min(
+            fixedEnd - 0.1,
+            Math.max(0, dragState.originalStart + deltaTime),
+          );
+          setVideoState({
+            effectStartTime: newStart,
+            effectEndTime: fixedEnd,
+          });
+          return;
+        }
+
         const layer = layers.find((l) => l.id === dragState.layerId);
         if (layer && (layer.type === "video" || layer.type === "audio")) {
           const fixedEnd =
@@ -415,6 +488,18 @@ export function Timeline() {
           });
         }
       } else if (dragState.type === "resize-end") {
+        if (dragState.layerId === EFFECT_RANGE_LAYER_ID) {
+          let newDuration = dragState.originalDuration + deltaTime;
+          newDuration = Math.max(
+            0.1,
+            Math.min(newDuration, duration - dragState.originalStart),
+          );
+          setVideoState({
+            effectEndTime: dragState.originalStart + newDuration,
+          });
+          return;
+        }
+
         let newDuration = dragState.originalDuration + deltaTime;
         if (newDuration < 0.1) newDuration = 0.1;
 
@@ -439,8 +524,82 @@ export function Timeline() {
       duration,
       updateLayer,
       layers,
+      setVideoState,
     ],
   );
+
+  const handleSegmentMouseDown = (
+    event: React.MouseEvent,
+    segment: TimelineSegment,
+  ) => {
+    if (segment.kind === "effects" && segment.layerId === EFFECT_RANGE_LAYER_ID) {
+      event.stopPropagation();
+      setDragState({
+        type: "move",
+        layerId: EFFECT_RANGE_LAYER_ID,
+        startX: event.clientX,
+        startY: event.clientY,
+        originalStart: segment.startTime,
+        originalDuration: segment.duration,
+        originalTrack: 0,
+        originalMediaStart: 0,
+      });
+      return;
+    }
+
+    if (!segment.layerId || segment.draggable === false) {
+      if (segment.layerId) selectLayer(segment.layerId);
+      event.stopPropagation();
+      return;
+    }
+    handleLayerMouseDown(event, segment.layerId);
+  };
+
+  const handleSegmentResizeStart = (
+    event: React.MouseEvent,
+    segment: TimelineSegment,
+    side: "start" | "end",
+  ) => {
+    event.stopPropagation();
+
+    if (segment.kind === "effects" && segment.layerId === EFFECT_RANGE_LAYER_ID) {
+      setDragState({
+        type: side === "start" ? "resize-start" : "resize-end",
+        layerId: EFFECT_RANGE_LAYER_ID,
+        startX: event.clientX,
+        startY: event.clientY,
+        originalStart: segment.startTime,
+        originalDuration: segment.duration,
+        originalTrack: 0,
+        originalMediaStart: 0,
+      });
+      return;
+    }
+
+    if (!segment.layerId || segment.resizable === false) return;
+    handleResizeStart(event, segment.layerId, side);
+  };
+
+  const handleRowResizeStart = (
+    event: React.MouseEvent,
+    rowId: string,
+    currentHeight: number,
+  ) => {
+    event.stopPropagation();
+    event.preventDefault();
+    setDragState({
+      type: "row-resize",
+      layerId: rowId,
+      rowId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originalStart: 0,
+      originalDuration: 0,
+      originalTrack: 0,
+      originalMediaStart: 0,
+      originalRowHeight: currentHeight,
+    });
+  };
 
   const setSelectedTransition = (
     side: "before" | "after",
@@ -675,132 +834,250 @@ export function Timeline() {
           </div>
 
           {/* Tracks */}
-          <div className="flex flex-col mt-4 gap-2 px-4 pb-12">
-            {trackIndices.map((trackIdx) => {
-              const trackLayers = tracksMap.get(trackIdx)!;
-              const primaryLayer =
-                trackLayers.find((l) => l.id === selectedLayerId) ||
-                trackLayers[0];
+          <div className="flex flex-col mt-4 gap-2 px-4 pb-4">
+            {timelineRows.map((row) => (
+              <TimelineTrackRow
+                key={row.id}
+                row={row}
+                duration={duration}
+                rowHeight={rowHeights[row.id] ?? 48}
+                selectedLayerId={selectedLayerId}
+                onSegmentMouseDown={handleSegmentMouseDown}
+                onSegmentResizeStart={handleSegmentResizeStart}
+                onRowResizeStart={handleRowResizeStart}
+              />
+            ))}
 
-              return (
-                <div
-                  key={`track-${trackIdx}`}
-                  className="flex h-12 group/track relative"
+            <div className="flex items-center gap-2 pt-2">
+              <span className="w-24 flex-shrink-0 text-[9px] font-black uppercase tracking-widest text-gray-400">
+                Add Layer
+              </span>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={handleAddAudioLayer}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50 px-3 text-[10px] font-bold text-emerald-700 transition-colors hover:bg-emerald-100"
                 >
-                  {/* Header */}
-                  <div className="w-24 flex-shrink-0 sticky left-0 z-20 flex flex-col justify-center px-1">
-                    <div
-                      className={cn(
-                        "flex items-center gap-2 text-gray-400 uppercase text-[9px] font-black bg-white/50 px-2 py-1.5 rounded-lg border border-gray-100 w-full backdrop-blur-sm shadow-sm transition-all",
-                        trackLayers.some((l) => l.id === selectedLayerId) &&
-                          "border-blue-500/30 text-blue-600 bg-blue-50/50",
-                      )}
-                    >
-                      {primaryLayer.type === "video" && (
-                        <Video className="w-3.5 h-3.5 text-blue-500" />
-                      )}
-                      {primaryLayer.type === "audio" && (
-                        <Music className="w-3.5 h-3.5 text-emerald-500" />
-                      )}
-                      {primaryLayer.type === "text" && (
-                        <Type className="w-3.5 h-3.5 text-purple-500" />
-                      )}
-                      {primaryLayer.type === "image" && (
-                        <ImageIcon className="w-3.5 h-3.5 text-orange-500" />
-                      )}
-                      <span className="truncate max-w-[50px]">
-                        {primaryLayer.name || `Track ${trackIdx + 1}`}
-                      </span>
-                    </div>
-                  </div>
-
-                  {/* Lane */}
-                  <div className="flex-1 relative bg-white/30 border border-gray-100/50 rounded-lg shadow-sm overflow-hidden hover:bg-white/50 transition-colors">
-                    {trackLayers.map((layer) => (
-                      <div
-                        key={layer.id}
-                        className={cn(
-                          "absolute top-1 bottom-1 rounded-md border text-[10px] flex items-center px-2 cursor-pointer transition-all select-none shadow-md overflow-hidden",
-                          selectedLayerId === layer.id
-                            ? "ring-2 ring-blue-500/50 z-10 brightness-105"
-                            : "hover:ring-1 hover:ring-black/5 opacity-90 hover:opacity-100",
-                          hasMergedNeighbor(layer, trackLayers, "before") &&
-                            "rounded-l-none border-l-0",
-                          hasMergedNeighbor(layer, trackLayers, "after") &&
-                            "rounded-r-none",
-                          layer.type === "video"
-                            ? "bg-blue-100 border-blue-200 text-blue-800"
-                            : layer.type === "audio"
-                              ? "bg-emerald-100 border-emerald-200 text-emerald-800"
-                              : layer.type === "text"
-                                ? "bg-purple-100 border-purple-200 text-purple-800"
-                                : "bg-orange-100 border-orange-200 text-orange-800",
-                        )}
-                        style={{
-                          left: `${(layer.startTime! / duration) * 100}%`,
-                          width: `${(layer.duration! / duration) * 100}%`,
-                        }}
-                        onMouseDown={(e) => handleLayerMouseDown(e, layer.id)}
-                      >
-                        {layer.type === "video" && (
-                          <VideoFrameStrip
-                            url={layer.data?.url}
-                          />
-                        )}
-
-                        {/* Trim Handles (Start) */}
-                        <div
-                          className={cn(
-                            "absolute left-0 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center z-20 transition-opacity",
-                            selectedLayerId === layer.id
-                              ? "opacity-100"
-                              : "opacity-0 group-hover:opacity-100",
-                          )}
-                          onMouseDown={(e) =>
-                            handleResizeStart(e, layer.id, "start")
-                          }
-                        >
-                          <div className="w-1.5 h-1/2 min-h-[16px] bg-white border border-gray-300 rounded-full shadow-sm z-30 pointer-events-none flex items-center justify-center">
-                            <div className="w-[1px] h-2 bg-gray-400" />
-                          </div>
-                        </div>
-
-                        <span className="flex min-w-0 items-center gap-1 truncate font-bold px-3 whitespace-nowrap z-0 pointer-events-none">
-                          {layer.type === "video" &&
-                            layer.data?.linkedAudio?.url && (
-                              <Music
-                                className="h-3 w-3 shrink-0 text-violet-600"
-                                aria-label="Linked audio"
-                              />
-                            )}
-                          {layer.name}
-                        </span>
-
-                        {/* Trim Handles (End) */}
-                        <div
-                          className={cn(
-                            "absolute right-0 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center z-20 transition-opacity",
-                            selectedLayerId === layer.id
-                              ? "opacity-100"
-                              : "opacity-0 group-hover:opacity-100",
-                          )}
-                          onMouseDown={(e) =>
-                            handleResizeStart(e, layer.id, "end")
-                          }
-                        >
-                          <div className="w-1.5 h-1/2 min-h-[16px] bg-white border border-gray-300 rounded-full shadow-sm z-30 pointer-events-none flex items-center justify-center">
-                            <div className="w-[1px] h-2 bg-gray-400" />
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              );
-            })}
+                  <Plus className="h-3.5 w-3.5" />
+                  Audio
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddTextLayer}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50 px-3 text-[10px] font-bold text-purple-700 transition-colors hover:bg-purple-100"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Text
+                </button>
+                <button
+                  type="button"
+                  onClick={handleAddOverlayLayer}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-orange-200 bg-orange-50 px-3 text-[10px] font-bold text-orange-700 transition-colors hover:bg-orange-100"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  Image
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       </div>
     </div>
+  );
+}
+
+function TimelineTrackRow({
+  row,
+  duration,
+  rowHeight,
+  selectedLayerId,
+  onSegmentMouseDown,
+  onSegmentResizeStart,
+  onRowResizeStart,
+}: {
+  row: TimelineRow;
+  duration: number;
+  rowHeight: number;
+  selectedLayerId: string | null;
+  onSegmentMouseDown: (
+    event: React.MouseEvent,
+    segment: TimelineSegment,
+  ) => void;
+  onSegmentResizeStart: (
+    event: React.MouseEvent,
+    segment: TimelineSegment,
+    side: "start" | "end",
+  ) => void;
+  onRowResizeStart: (
+    event: React.MouseEvent,
+    rowId: string,
+    currentHeight: number,
+  ) => void;
+}) {
+  const layers = useEditorStore.getState().getLayers();
+  const isRowSelected = row.segments.some(
+    (segment) => segment.layerId && segment.layerId === selectedLayerId,
+  );
+
+  const RowIcon =
+    row.kind === "video"
+      ? Video
+      : row.kind === "audio"
+        ? Music
+        : row.kind === "effects"
+          ? Sparkles
+          : Layers;
+
+  const rowAccent =
+    row.kind === "video"
+      ? "text-blue-500"
+      : row.kind === "audio"
+        ? "text-emerald-500"
+        : row.kind === "effects"
+          ? "text-violet-500"
+          : "text-orange-500";
+
+  return (
+    <div className="group/track relative flex" style={{ height: rowHeight }}>
+      <div className="sticky left-0 z-20 flex w-24 flex-shrink-0 flex-col justify-center px-1">
+        <div
+          className={cn(
+            "flex w-full items-center gap-2 rounded-lg border border-gray-100 bg-white/50 px-2 py-1.5 text-[9px] font-black uppercase text-gray-400 shadow-sm backdrop-blur-sm transition-all",
+            isRowSelected && "border-blue-500/30 bg-blue-50/50 text-blue-600",
+          )}
+        >
+          <RowIcon className={cn("h-3.5 w-3.5", rowAccent)} />
+          <span className="max-w-[50px] truncate">{row.label}</span>
+        </div>
+      </div>
+
+      <div className="relative flex-1 overflow-hidden rounded-lg border border-gray-100/50 bg-white/30 shadow-sm transition-colors hover:bg-white/50">
+        {row.segments.map((segment) => {
+          const isSelected =
+            segment.layerId === EFFECT_RANGE_LAYER_ID
+              ? false
+              : Boolean(segment.layerId) &&
+                segment.layerId === selectedLayerId;
+          const segmentWidth = Math.max(
+            0,
+            (segment.duration / duration) * 100,
+          );
+          const segmentLeft = Math.max(
+            0,
+            (segment.startTime / duration) * 100,
+          );
+          const videoUrl =
+            segment.kind === "video"
+              ? layers.find((layer) => layer.id === segment.layerId)?.data?.url
+              : undefined;
+
+          return (
+            <div
+              key={segment.id}
+              className={cn(
+                "absolute top-1 bottom-1 flex cursor-pointer items-center overflow-hidden rounded-md border px-2 text-[10px] shadow-md transition-all select-none",
+                isSelected
+                  ? "z-10 brightness-105 ring-2 ring-blue-500/50"
+                  : "opacity-90 hover:opacity-100 hover:ring-1 hover:ring-black/5",
+                segment.kind === "video" &&
+                  "border-blue-200 bg-blue-100 text-blue-800",
+                (segment.kind === "audio" || segment.kind === "video-sound") &&
+                  "border-emerald-200 bg-emerald-100 text-emerald-800",
+                segment.kind === "effects" &&
+                  (segment.label === "No effects applied"
+                    ? "border-dashed border-violet-200 bg-violet-50/70 text-violet-400"
+                    : "border-violet-200 bg-gradient-to-r from-violet-100 to-fuchsia-100 text-violet-800"),
+                segment.kind === "text" &&
+                  "border-purple-200 bg-purple-100 text-purple-800",
+                (segment.kind === "image" || segment.kind === "overlay") &&
+                  "border-orange-200 bg-orange-100 text-orange-800",
+              )}
+              style={{
+                left: `${segmentLeft}%`,
+                width: `${segmentWidth}%`,
+                minWidth: segment.kind === "effects" ? undefined : "28px",
+              }}
+              onMouseDown={(event) => onSegmentMouseDown(event, segment)}
+            >
+              {segment.kind === "video" && <VideoFrameStrip url={videoUrl} />}
+              {(segment.kind === "audio" || segment.kind === "video-sound") && (
+                <AudioWaveformStrip />
+              )}
+              {segment.kind === "effects" &&
+                segment.label !== "No effects applied" && (
+                  <Sparkles className="pointer-events-none absolute left-2 h-3 w-3 text-violet-500/70" />
+                )}
+
+              {segment.resizable !== false && (
+                <div
+                  className={cn(
+                    "absolute top-0 bottom-0 left-0 z-20 flex w-4 cursor-ew-resize items-center justify-center transition-opacity",
+                    isSelected
+                      ? "opacity-100"
+                      : "opacity-0 group-hover/track:opacity-100",
+                  )}
+                  onMouseDown={(event) =>
+                    onSegmentResizeStart(event, segment, "start")
+                  }
+                >
+                  <div className="pointer-events-none z-30 flex h-1/2 min-h-[16px] w-1.5 items-center justify-center rounded-full border border-gray-300 bg-white shadow-sm">
+                    <div className="h-2 w-[1px] bg-gray-400" />
+                  </div>
+                </div>
+              )}
+
+              <span className="pointer-events-none z-0 flex min-w-0 items-center gap-1 truncate px-3 font-bold whitespace-nowrap">
+                {segment.kind === "video-sound" && (
+                  <Music className="h-3 w-3 shrink-0" />
+                )}
+                {segment.label}
+              </span>
+
+              {segment.resizable !== false && (
+                <div
+                  className={cn(
+                    "absolute top-0 right-0 bottom-0 z-20 flex w-4 cursor-ew-resize items-center justify-center transition-opacity",
+                    isSelected
+                      ? "opacity-100"
+                      : "opacity-0 group-hover/track:opacity-100",
+                  )}
+                  onMouseDown={(event) =>
+                    onSegmentResizeStart(event, segment, "end")
+                  }
+                >
+                  <div className="pointer-events-none z-30 flex h-1/2 min-h-[16px] w-1.5 items-center justify-center rounded-full border border-gray-300 bg-white shadow-sm">
+                    <div className="h-2 w-[1px] bg-gray-400" />
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <button
+        type="button"
+        aria-label={`Resize ${row.label} track height`}
+        onMouseDown={(event) => onRowResizeStart(event, row.id, rowHeight)}
+        className="absolute right-0 -bottom-1 left-24 z-30 h-2 cursor-row-resize opacity-0 transition-opacity group-hover/track:opacity-100"
+      >
+        <span className="mx-auto block h-1 w-10 rounded-full bg-gray-300/80" />
+      </button>
+    </div>
+  );
+}
+
+function AudioWaveformStrip() {
+  return (
+    <div
+      aria-hidden
+      className="pointer-events-none absolute inset-0 opacity-35"
+      style={{
+        backgroundImage:
+          "repeating-linear-gradient(90deg, rgba(16,185,129,0.55) 0 2px, transparent 2px 6px)",
+        maskImage:
+          "repeating-linear-gradient(180deg, transparent 0 20%, black 20% 80%, transparent 80% 100%)",
+      }}
+    />
   );
 }

@@ -34,6 +34,38 @@ export const buildVideoFilterCss = (filters: Partial<VideoFilters> = {}) => {
   ].join(' ')
 }
 
+export const getEffectRange = (
+  effectStartTime: number,
+  effectEndTime: number,
+  compositionDuration: number,
+) => {
+  const safeDuration = Math.max(0.1, compositionDuration)
+  const start = Math.min(
+    Math.max(0, effectStartTime),
+    Math.max(0, safeDuration - 0.1),
+  )
+  const end =
+    effectEndTime > 0
+      ? Math.min(Math.max(start + 0.1, effectEndTime), safeDuration)
+      : safeDuration
+
+  return { start, end, duration: Math.max(0.1, end - start) }
+}
+
+export const isEffectActiveAtTime = (
+  time: number,
+  effectStartTime: number,
+  effectEndTime: number,
+  compositionDuration: number,
+) => {
+  const { start, end } = getEffectRange(
+    effectStartTime,
+    effectEndTime,
+    compositionDuration,
+  )
+  return time >= start && time < end
+}
+
 export const applyResolvedFramePresentation = (
   element: HTMLElement,
   frame: {

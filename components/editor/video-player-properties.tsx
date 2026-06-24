@@ -93,6 +93,8 @@ export function VideoPlayerProperties() {
       filterPreset: "none",
       filterPresetIntensity: 100,
       filters: { ...DEFAULT_VIDEO_FILTERS },
+      effectStartTime: 0,
+      effectEndTime: 0,
     });
   };
 

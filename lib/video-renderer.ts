@@ -13,7 +13,7 @@ import {
   getLinkedVideoAudio,
   isLinkedAudioActive,
 } from "./linked-video-audio";
-import { buildVideoFilterCss } from "./video-filters";
+import { buildVideoFilterCss, isEffectActiveAtTime } from "./video-filters";
 
 export type VideoExportFormat = "mp4" | "webm";
 
@@ -358,7 +358,14 @@ export const exportVideo = async (
 
     context.fillStyle = "#000000";
     context.fillRect(0, 0, width, height);
-    const filterCss = buildVideoFilterCss(store.videoState.filters);
+    const filterCss = isEffectActiveAtTime(
+      compositionTime,
+      store.videoState.effectStartTime ?? 0,
+      store.videoState.effectEndTime ?? 0,
+      composition.duration,
+    )
+      ? buildVideoFilterCss(store.videoState.filters)
+      : buildVideoFilterCss();
     frames.forEach((frame) => {
       const sourceUrl = frame.scene.layer.data?.url;
       const video = sourceUrl ? sourceVideos.get(sourceUrl) : undefined;
