@@ -560,11 +560,13 @@ export function VideoPlayerCanvas() {
       return;
     }
 
+    const compositionDuration = Math.max(0, composition.duration);
+    const atEnd =
+      compositionDuration > 0 &&
+      latestState.currentTime >= compositionDuration - 0.01;
+
     setVideoState({
-      currentTime:
-        latestState.currentTime >= composition.duration - 0.01
-          ? 0
-          : latestState.currentTime,
+      ...(atEnd ? { currentTime: 0 } : {}),
       isPlaying: true,
     });
   }, [composition.duration, setVideoState]);
@@ -725,15 +727,20 @@ export function VideoPlayerCanvas() {
               {/* Fabric Overlay Canvas */}
               <canvas
                 ref={overlayCanvasRef}
-                className="absolute inset-0 pointer-events-auto"
+                className={`absolute inset-0 ${isPlaying ? "pointer-events-auto" : "pointer-events-none"}`}
               />
 
               {!isPlaying && (
-                <div className="absolute inset-0 flex items-center justify-center bg-black/20 backdrop-blur-[1px] cursor-pointer group-hover:bg-black/30 transition-all pointer-events-none">
-                  <div className="w-16 h-16 bg-blue-600 rounded-full flex items-center justify-center shadow-2xl scale-90 group-hover:scale-100 transition-transform">
-                    <Play className="w-6 h-6 text-white fill-white ml-1" />
-                  </div>
-                </div>
+                <button
+                  type="button"
+                  onClick={togglePlayback}
+                  aria-label="Play video"
+                  className="absolute inset-0 z-20 flex cursor-pointer items-center justify-center border-0 bg-black/20 p-0 backdrop-blur-[1px] transition-all group-hover:bg-black/30"
+                >
+                  <span className="flex h-16 w-16 scale-90 items-center justify-center rounded-full bg-blue-600 shadow-2xl transition-transform group-hover:scale-100">
+                    <Play className="ml-1 h-6 w-6 fill-white text-white" />
+                  </span>
+                </button>
               )}
             </div>
           </div>

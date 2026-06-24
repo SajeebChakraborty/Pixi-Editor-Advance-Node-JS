@@ -10,6 +10,7 @@ import {
   DEFAULT_VIDEO_FILTERS,
   type VideoFilters,
 } from './video-filters'
+import type { ImagePresetId } from './editor-actions'
 
 // Canvas presets
 export const CANVAS_PRESETS = {
@@ -164,6 +165,8 @@ export interface VideoState {
   startTime: number
   endTime: number
   filters: VideoFilters
+  filterPreset: ImagePresetId
+  filterPresetIntensity: number
 }
 
 export type EditorTool = 'select' | 'hand' | 'text' | 'circle' | 'square' | 'star' | 'pen' | 'arrow'
@@ -430,6 +433,8 @@ const initialVideoState: VideoState = {
   startTime: 0,
   endTime: 0,
   filters: { ...DEFAULT_VIDEO_FILTERS },
+  filterPreset: 'none',
+  filterPresetIntensity: 100,
 }
 
 export const useEditorStore = create<EditorState>((set, get) => ({

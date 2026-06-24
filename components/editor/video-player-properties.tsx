@@ -1,6 +1,7 @@
 "use client";
 
-import { ImageIcon, Trash2, Type, Volume2, VolumeX } from "lucide-react";
+import { useState } from "react";
+import { ChevronDown, ImageIcon, SlidersHorizontal, Trash2, Type, Volume2, VolumeX } from "lucide-react";
 import { CanvasProperties } from "@/components/editor/properties/canvas-properties";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
@@ -8,8 +9,15 @@ import { useEditorStore } from "@/lib/store";
 import { DEFAULT_VIDEO_FILTERS } from "@/lib/video-filters";
 import type { SceneTransitionType } from "@/lib/video-composition";
 import { SCENE_TRANSITION_OPTIONS } from "@/lib/video-transitions";
+import {
+  buildVideoFiltersFromPreset,
+  IMAGE_PRESETS,
+  type ImagePresetId,
+} from "@/lib/video-presets";
 
 export function VideoPlayerProperties() {
+  const [presetsOpen, setPresetsOpen] = useState(true);
+  const [adjustOpen, setAdjustOpen] = useState(true);
   const volume = useEditorStore((state) => state.videoState.volume);
   const isMuted = useEditorStore((state) => state.videoState.isMuted);
   const playbackRate = useEditorStore(
@@ -22,6 +30,12 @@ export function VideoPlayerProperties() {
     ...DEFAULT_VIDEO_FILTERS,
     ...useEditorStore((state) => state.videoState.filters),
   };
+  const filterPreset = useEditorStore(
+    (state) => state.videoState.filterPreset || "none",
+  );
+  const filterPresetIntensity = useEditorStore(
+    (state) => state.videoState.filterPresetIntensity ?? 100,
+  );
   const pages = useEditorStore((state) => state.canvas.pages);
   const activePageId = useEditorStore((state) => state.canvas.activePageId);
   const setVideoState = useEditorStore((state) => state.setVideoState);
@@ -50,6 +64,36 @@ export function VideoPlayerProperties() {
     const mins = Math.floor(time / 60);
     const secs = Math.floor(time % 60);
     return `${mins}:${secs.toString().padStart(2, "0")}`;
+  };
+
+  const handlePreset = (presetId: ImagePresetId) => {
+    setVideoState({
+      filterPreset: presetId,
+      filterPresetIntensity: 100,
+      filters: buildVideoFiltersFromPreset(presetId, 100),
+    });
+  };
+
+  const handlePresetIntensity = (value: number) => {
+    setVideoState({
+      filterPresetIntensity: value,
+      filters: buildVideoFiltersFromPreset(filterPreset, value),
+    });
+  };
+
+  const handleFilterChange = (partial: Partial<typeof filters>) => {
+    setVideoState({
+      filterPreset: "none",
+      filters: { ...filters, ...partial },
+    });
+  };
+
+  const resetFilters = () => {
+    setVideoState({
+      filterPreset: "none",
+      filterPresetIntensity: 100,
+      filters: { ...DEFAULT_VIDEO_FILTERS },
+    });
   };
 
   return (
@@ -121,86 +165,150 @@ export function VideoPlayerProperties() {
         </div>
       </section>
 
-      <section className="space-y-4 px-4">
-        <h3 className="flex justify-between border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
-          <span>Visual Effects</span>
-          <button
-            onClick={() =>
-              setVideoState({
-                filters: { ...DEFAULT_VIDEO_FILTERS },
-              })
-            }
-            className="text-blue-400 hover:text-blue-300"
-          >
-            Reset
-          </button>
-        </h3>
-        <div className="space-y-4">
-          <EffectSlider
-            label="Grayscale"
-            value={filters.grayscale}
-            max={100}
-            onChange={(grayscale) =>
-              setVideoState({ filters: { ...filters, grayscale } })
-            }
+      <section className="space-y-3 px-4">
+        <button
+          type="button"
+          onClick={() => setPresetsOpen((open) => !open)}
+          className="group flex w-full items-center justify-between border-b border-white/10 pb-2 text-left"
+        >
+          <h3 className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
+            Presets
+          </h3>
+          <ChevronDown
+            className={cn(
+              "h-4 w-4 text-gray-500 transition-transform group-hover:text-white",
+              presetsOpen && "rotate-180",
+            )}
           />
-          <EffectSlider
-            label="Blur"
-            value={filters.blur}
-            max={20}
-            onChange={(blur) =>
-              setVideoState({ filters: { ...filters, blur } })
-            }
-          />
-          <EffectSlider
-            label="Brightness"
-            value={filters.brightness}
-            max={200}
-            onChange={(brightness) =>
-              setVideoState({ filters: { ...filters, brightness } })
-            }
-          />
-          <EffectSlider
-            label="Contrast"
-            value={filters.contrast}
-            max={200}
-            onChange={(contrast) =>
-              setVideoState({ filters: { ...filters, contrast } })
-            }
-          />
-          <EffectSlider
-            label="Saturation"
-            value={filters.saturation}
-            max={200}
-            onChange={(saturation) =>
-              setVideoState({ filters: { ...filters, saturation } })
-            }
-          />
-          <EffectSlider
-            label="Sepia"
-            value={filters.sepia}
-            max={100}
-            onChange={(sepia) =>
-              setVideoState({ filters: { ...filters, sepia } })
-            }
-          />
-          <EffectSlider
-            label="Hue Rotate"
-            value={filters.hueRotate}
-            max={360}
-            onChange={(hueRotate) =>
-              setVideoState({ filters: { ...filters, hueRotate } })
-            }
-          />
-          <EffectSlider
-            label="Invert"
-            value={filters.invert}
-            max={100}
-            onChange={(invert) =>
-              setVideoState({ filters: { ...filters, invert } })
-            }
-          />
-        </div>
+        </button>
+
+        {presetsOpen && (
+          <div className="space-y-3">
+            <div className="flex items-center justify-between rounded-xl bg-[#111] px-3 py-2 text-[10px] font-bold uppercase tracking-wide text-gray-400 ring-1 ring-white/10">
+              <span>{IMAGE_PRESETS.length} effects</span>
+              <span className="text-violet-300">
+                {IMAGE_PRESETS.find((item) => item.id === filterPreset)?.label ||
+                  "None"}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-3 gap-2">
+              {IMAGE_PRESETS.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  title={item.category}
+                  onClick={() => handlePreset(item.id)}
+                  className={cn(
+                    "h-9 rounded-lg px-2 text-[11px] font-bold transition-colors",
+                    filterPreset === item.id
+                      ? "bg-white text-black"
+                      : "bg-[#222] text-gray-400 hover:bg-white/10 hover:text-white",
+                  )}
+                >
+                  {item.label}
+                </button>
+              ))}
+            </div>
+
+            {filterPreset !== "none" && (
+              <div className="rounded-xl bg-[#111] p-3 ring-1 ring-white/10">
+                <EffectSlider
+                  label="Preset Intensity"
+                  value={filterPresetIntensity}
+                  max={100}
+                  onChange={handlePresetIntensity}
+                />
+              </div>
+            )}
+          </div>
+        )}
+      </section>
+
+      <section className="space-y-3 px-4">
+        <button
+          type="button"
+          onClick={() => setAdjustOpen((open) => !open)}
+          className="group flex w-full items-center justify-between border-b border-white/10 pb-2 text-left"
+        >
+          <div className="flex items-center gap-2">
+            <SlidersHorizontal className="h-3.5 w-3.5 text-violet-400" />
+            <h3 className="text-[11px] font-bold uppercase tracking-widest text-gray-500">
+              Adjust
+            </h3>
+          </div>
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                resetFilters();
+              }}
+              className="text-[10px] font-bold uppercase text-blue-400 hover:text-blue-300"
+            >
+              Reset
+            </button>
+            <ChevronDown
+              className={cn(
+                "h-4 w-4 text-gray-500 transition-transform group-hover:text-white",
+                adjustOpen && "rotate-180",
+              )}
+            />
+          </div>
+        </button>
+
+        {adjustOpen && (
+          <div className="space-y-4">
+            <EffectSlider
+              label="Grayscale"
+              value={filters.grayscale}
+              max={100}
+              onChange={(grayscale) => handleFilterChange({ grayscale })}
+            />
+            <EffectSlider
+              label="Blur"
+              value={filters.blur}
+              max={20}
+              onChange={(blur) => handleFilterChange({ blur })}
+            />
+            <EffectSlider
+              label="Brightness"
+              value={filters.brightness}
+              max={200}
+              onChange={(brightness) => handleFilterChange({ brightness })}
+            />
+            <EffectSlider
+              label="Contrast"
+              value={filters.contrast}
+              max={200}
+              onChange={(contrast) => handleFilterChange({ contrast })}
+            />
+            <EffectSlider
+              label="Saturation"
+              value={filters.saturation}
+              max={200}
+              onChange={(saturation) => handleFilterChange({ saturation })}
+            />
+            <EffectSlider
+              label="Sepia"
+              value={filters.sepia}
+              max={100}
+              onChange={(sepia) => handleFilterChange({ sepia })}
+            />
+            <EffectSlider
+              label="Hue Rotate"
+              value={filters.hueRotate}
+              max={360}
+              onChange={(hueRotate) => handleFilterChange({ hueRotate })}
+            />
+            <EffectSlider
+              label="Invert"
+              value={filters.invert}
+              max={100}
+              onChange={(invert) => handleFilterChange({ invert })}
+            />
+          </div>
+        )}
       </section>
 
       <section className="space-y-4 px-4">

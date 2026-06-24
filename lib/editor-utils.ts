@@ -69,7 +69,7 @@ export const addMediaFromUrl = async (
   targetFabricCanvas?: fabric.Canvas | null,
   placement?: { left: number; top: number },
 ): Promise<string | null> => {
-  const { canvas, addLayer, setVideoState, addRecentAsset, videoState } = store;
+  const { canvas, addLayer, setVideoState, addRecentAsset, videoState, setCanvas } = store;
   const { width: storeWidth, height: storeHeight } = canvas || { width: 1280, height: 720 };
 
   const getLiveFabricCanvas = () => {
@@ -466,9 +466,28 @@ export const addMediaFromUrl = async (
       const hasVisualLayer = currentLayers.some((layer: any) =>
         ["image", "video", "sticker"].includes(layer.type),
       );
-      const targetWidth = baseWidth;
-      const targetHeight = baseHeight;
-      const scale = hasVisualLayer || placement
+      const shouldAutoResizeCanvasToImage =
+        !silent &&
+        useEditorStore.getState().editorMode === "photo" &&
+        !hasVisualLayer &&
+        !placement &&
+        Number.isFinite(imgWidth) &&
+        Number.isFinite(imgHeight) &&
+        imgWidth > 0 &&
+        imgHeight > 0;
+
+      if (shouldAutoResizeCanvasToImage) {
+        setCanvas?.({ width: imgWidth, height: imgHeight });
+        await new Promise<void>((resolve) => {
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+        });
+      }
+
+      const targetWidth = shouldAutoResizeCanvasToImage ? imgWidth : baseWidth;
+      const targetHeight = shouldAutoResizeCanvasToImage ? imgHeight : baseHeight;
+      const scale = shouldAutoResizeCanvasToImage
+        ? 1
+        : hasVisualLayer || placement
           ? Math.min(
               1,
               (targetWidth * 0.45) / imgWidth,
@@ -480,10 +499,14 @@ export const addMediaFromUrl = async (
       const renderedHeight = imgHeight * scale;
       const imageLeft = placement
         ? placement.left - renderedWidth / 2
-        : (targetWidth - renderedWidth) / 2;
+        : shouldAutoResizeCanvasToImage
+          ? 0
+          : (targetWidth - renderedWidth) / 2;
       const imageTop = placement
         ? placement.top - renderedHeight / 2
-        : (targetHeight - renderedHeight) / 2;
+        : shouldAutoResizeCanvasToImage
+          ? 0
+          : (targetHeight - renderedHeight) / 2;
 
       const fabricImg = new fabric.FabricImage(loadedEl, {
         left: imageLeft,
@@ -565,7 +588,11 @@ export const addMediaFromUrl = async (
         fabricImg.set({ visible: true, opacity: 1 });
         liveCanvas.setActiveObject(fabricImg);
         liveCanvas.requestRenderAll();
-        toast.success("Image preview loaded!");
+        toast.success(
+          shouldAutoResizeCanvasToImage
+            ? `Canvas sized to ${imgWidth}×${imgHeight}`
+            : "Image preview loaded!",
+        );
         addRecentAsset({ 
           id: objectId, 
           type: "image", 

@@ -259,28 +259,16 @@ export function Timeline() {
   };
 
   const togglePlay = () => {
-    const hasActiveVideo = layers.some((layer) => {
-      if (layer.type !== "video") return false;
-      const layerStart = Number(layer.startTime || 0);
-      const layerEnd = layerStart + Number(layer.duration || 0);
-      return currentTime >= layerStart && currentTime < layerEnd;
-    });
-
-    if (!isPlaying && (!hasActiveVideo || currentTime >= duration - 0.01)) {
-      const firstVideoStart = layers
-        .filter((layer) => layer.type === "video")
-        .reduce(
-          (earliest, layer) =>
-            Math.min(earliest, Number(layer.startTime || 0)),
-          Number.POSITIVE_INFINITY,
-        );
-      setVideoState({
-        currentTime: Number.isFinite(firstVideoStart) ? firstVideoStart : 0,
-        isPlaying: true,
-      });
+    if (isPlaying) {
+      setVideoState({ isPlaying: false });
       return;
     }
-    setVideoState({ isPlaying: !isPlaying });
+
+    const atEnd = currentTime >= duration - 0.01;
+    setVideoState({
+      ...(atEnd ? { currentTime: 0 } : {}),
+      isPlaying: true,
+    });
   };
 
   const formatTime = (seconds: number) => {

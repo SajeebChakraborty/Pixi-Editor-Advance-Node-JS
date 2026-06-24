@@ -421,6 +421,17 @@ const scaleFilterSpec = (spec: FilterSpec, amount: number): FilterSpec => ({
     : undefined,
 });
 
+export const getPresetFilterSpecs = (
+  preset: ImagePresetId,
+  presetIntensity = DEFAULT_IMAGE_PRESET_INTENSITY,
+): FilterSpec[] => {
+  const amount = normalizeImagePresetIntensity(presetIntensity) / 100;
+
+  if (preset === "none" || amount <= 0) return [];
+
+  return presetFilterMap[preset].map((spec) => scaleFilterSpec(spec, amount));
+};
+
 const buildPresetFilters = (
   preset: ImagePresetId,
   presetIntensity = DEFAULT_IMAGE_PRESET_INTENSITY,

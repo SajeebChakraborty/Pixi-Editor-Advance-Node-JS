@@ -339,8 +339,10 @@ export function PropertiesPanel() {
             selectedLayer?.type === "shape") && (
             <ShapeProperties selectedObject={selectedObject as any} />
           )}
+        </div>
 
-          {!selectedLayer && <CanvasProperties />}
+        <div className="border-t border-white/10">
+          <CanvasProperties />
         </div>
       </div>
     </div>
