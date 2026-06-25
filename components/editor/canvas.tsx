@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 import { ContextMenu } from "./context-menu";
 import {
   attachVideoOverlay,
+  refitAllVideosToProjectCanvas,
   setVideoOverlayVisibility,
   syncVideoOverlays,
 } from "@/lib/video-overlay";
@@ -273,6 +274,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       top: (pasteboardMargin + artboardY) * zoom,
       width: pageWidth * zoom,
       height: pageHeight * zoom,
+    };
+    (canvas as any).projectDimensions = {
+      width: pageWidth,
+      height: pageHeight,
     };
 
     fabricCanvasRef.current = canvas;
@@ -993,6 +998,10 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
         width: pageWidth * zoom,
         height: pageHeight * zoom,
       };
+      (canvas as any).projectDimensions = {
+        width: pageWidth,
+        height: pageHeight,
+      };
       syncVideoOverlays(canvas);
 
       // Update interactive properties based on tool
@@ -1090,6 +1099,14 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
       if (!canvas) return false;
 
       const layers = pages.find((p: EditorPage) => p.id === pageId)?.layers || [];
+      refitAllVideosToProjectCanvas(canvas, pageWidth, pageHeight, (videoObject) => {
+        const layer = layers.find((item) => item.objectId === videoObject.name);
+        if (!layer?.data) return null;
+        return {
+          width: Math.max(1, Number(layer.data.width || pageWidth)),
+          height: Math.max(1, Number(layer.data.height || pageHeight)),
+        };
+      });
       const currTime = Number.isFinite(timelineTime) ? timelineTime : 0;
       let needsRender = false;
       const processedVideoObjects = new Set<string>();
@@ -1334,6 +1351,8 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     [
       pages,
       pageId,
+      pageWidth,
+      pageHeight,
       isPlaying,
       isMuted,
       volume,

@@ -10,7 +10,7 @@ import {
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
-import { Canvas as FabricCanvas } from "fabric";
+import { Canvas as FabricCanvas, FabricObject } from "fabric";
 import {
   resolveVideoPlaybackUrl,
   videoNeedsCrossOrigin,
@@ -29,16 +29,30 @@ import {
   applyPersistedLayerState,
 } from "@/lib/editor-utils";
 import {
-  applyResolvedFramePresentation,
   buildVideoFilterCss,
   isEffectActiveAtTime,
 } from "@/lib/video-filters";
 import {
   attachVideoOverlay,
+  fitFabricCanvasToContainer,
+  fitVideoObjectToCanvas,
+  refitAllVideosToProjectCanvas,
   setVideoOverlayOpacity,
   setVideoOverlayVisibility,
   syncVideoOverlays,
+  syncVideoOverlay,
 } from "@/lib/video-overlay";
+import {
+  applyFabricTransformControls,
+  installFabricTransformControlDefaults,
+} from "@/lib/fabric-transform-controls";
+
+function getProjectCanvasSize(canvas: { width?: number; height?: number }) {
+  return {
+    width: Math.max(1, Number(canvas.width || 1280)),
+    height: Math.max(1, Number(canvas.height || 720)),
+  };
+}
 
 export function VideoPlayerCanvas() {
   const {
@@ -60,12 +74,16 @@ export function VideoPlayerCanvas() {
   const loadedVideoSourcesRef = useRef<(string | null)[]>([null, null]);
   const audioElementsRef = useRef(new Map<string, HTMLAudioElement>());
   const linkedAudioElementsRef = useRef(new Map<string, HTMLAudioElement>());
-  const videoResolutionRef = useRef({ width: 1920, height: 1080 });
+  const projectSize = getProjectCanvasSize(globalCanvas);
+  const videoResolutionRef = useRef(projectSize);
   const [isExported, setIsExported] = useState(false);
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null);
-  const [videoResolution, setVideoResolution] = useState({
-    width: 1920,
-    height: 1080,
+  const [videoResolution, setVideoResolution] = useState(projectSize);
+  const [artboardFrame, setArtboardFrame] = useState({
+    left: 0,
+    top: 0,
+    width: projectSize.width,
+    height: projectSize.height,
   });
 
   const {
@@ -115,19 +133,39 @@ export function VideoPlayerCanvas() {
     if (!canvas || !container) return;
 
     const { width, height } = container.getBoundingClientRect();
-    const resolution = videoResolutionRef.current;
-    canvas.setDimensions(resolution, { backstoreOnly: true });
-    canvas.setDimensions(
-      { width: `${width}px`, height: `${height}px` },
-      { cssOnly: true },
+    const resolution = getProjectCanvasSize(
+      useEditorStore.getState().canvas,
     );
-    (canvas as any).artboardExportBounds = {
-      left: 0,
-      top: 0,
-      width: resolution.width,
-      height: resolution.height,
-    };
-    canvas.setZoom(1);
+    videoResolutionRef.current = resolution;
+    fitFabricCanvasToContainer(
+      canvas,
+      width,
+      height,
+      resolution.width,
+      resolution.height,
+    );
+    const bounds = (canvas as any).artboardExportBounds as
+      | { left: number; top: number; width: number; height: number }
+      | undefined;
+    if (bounds) {
+      setArtboardFrame(bounds);
+    }
+    refitAllVideosToProjectCanvas(
+      canvas,
+      resolution.width,
+      resolution.height,
+      (videoObject) => {
+        const layer = useEditorStore
+          .getState()
+          .getLayers()
+          .find((item) => item.objectId === videoObject.name);
+        if (!layer?.data) return null;
+        return {
+          width: Math.max(1, Number(layer.data.width || 0)),
+          height: Math.max(1, Number(layer.data.height || 0)),
+        };
+      },
+    );
     syncVideoOverlays(canvas);
     canvas.requestRenderAll();
   }, []);
@@ -136,22 +174,40 @@ export function VideoPlayerCanvas() {
   useEffect(() => {
     if (!overlayCanvasRef.current) return;
 
+    const resolution = getProjectCanvasSize(globalCanvas);
+    videoResolutionRef.current = resolution;
+
     const canvas = new FabricCanvas(overlayCanvasRef.current, {
-      width: videoResolutionRef.current.width,
-      height: videoResolutionRef.current.height,
+      width: resolution.width,
+      height: resolution.height,
       selection: true,
       backgroundColor: "transparent",
       preserveObjectStacking: true,
+      enableRetinaScaling: false,
     });
-    (canvas as any).artboardExportBounds = {
-      left: 0,
-      top: 0,
-      width: videoResolutionRef.current.width,
-      height: videoResolutionRef.current.height,
-    };
+
+    installFabricTransformControlDefaults(canvas);
 
     const syncNativeVideoLayers = () => syncVideoOverlays(canvas);
     canvas.on("after:render", syncNativeVideoLayers);
+
+    const syncActiveVideoOverlay = (target: FabricObject | undefined) => {
+      if (!target || !(target as any)._videoEl) return;
+      setVideoOverlayVisibility(target as any, true);
+      setVideoOverlayOpacity(target as any, 1);
+      syncVideoOverlay(target as any);
+      canvas.requestRenderAll();
+    };
+
+    canvas.on("object:scaling", (event) => syncActiveVideoOverlay(event.target));
+    canvas.on("object:moving", (event) => syncActiveVideoOverlay(event.target));
+    canvas.on("object:modified", (event) => {
+      if (event.target) {
+        (event.target as any)._userTransform = true;
+      }
+      syncActiveVideoOverlay(event.target);
+      saveToHistory(JSON.stringify(canvas.toJSON()));
+    });
 
     const handleSelection = () => {
       const activeObjects = canvas.getActiveObjects() || [];
@@ -164,22 +220,29 @@ export function VideoPlayerCanvas() {
       selectLayer(layerId || null);
     };
 
-    const persistCanvasState = () => {
-      saveToHistory(JSON.stringify(canvas.toJSON()));
-    };
-
     canvas.on("selection:created", handleSelection);
     canvas.on("selection:updated", handleSelection);
-    canvas.on("selection:cleared", () => selectLayer(null));
-    canvas.on("object:modified", persistCanvasState);
+    canvas.on("selection:cleared", () => {
+      selectLayer(null);
+      canvas.requestRenderAll();
+    });
 
     canvas.targetFindTolerance = 8;
     fabricRef.current = canvas;
     setVideoFabricCanvas(canvas);
     window.addEventListener("resize", syncCanvasSize);
-    setTimeout(syncCanvasSize, 100);
+    const resizeObserver = new ResizeObserver(() => {
+      syncCanvasSize();
+    });
+    if (containerRef.current) {
+      resizeObserver.observe(containerRef.current);
+    }
+    requestAnimationFrame(() => {
+      syncCanvasSize();
+    });
 
     return () => {
+      resizeObserver.disconnect();
       if (useEditorStore.getState().videoFabricCanvas === canvas) {
         setVideoFabricCanvas(null);
       }
@@ -219,8 +282,31 @@ export function VideoPlayerCanvas() {
         const object = canvas
           .getObjects()
           .find((candidate: any) => candidate.name === objectId);
-        if (object) applyPersistedLayerState(object, layer);
+        if (object) {
+          if (layer.type === "video") {
+            fitVideoObjectToCanvas(
+              object,
+              Math.max(1, Number(globalCanvas.width || 1280)),
+              Math.max(1, Number(globalCanvas.height || 720)),
+              Math.max(1, Number(layer.data?.width || 1280)),
+              Math.max(1, Number(layer.data?.height || 720)),
+            );
+            applyFabricTransformControls(object);
+          } else {
+            applyPersistedLayerState(object, layer);
+          }
+        }
       }
+      fitFabricCanvasToContainer(
+        canvas,
+        containerRef.current?.getBoundingClientRect().width ||
+          canvas.getWidth(),
+        containerRef.current?.getBoundingClientRect().height ||
+          canvas.getHeight(),
+        Math.max(1, Number(globalCanvas.width || 1280)),
+        Math.max(1, Number(globalCanvas.height || 720)),
+      );
+      syncVideoOverlays(canvas);
       canvas.requestRenderAll();
     };
 
@@ -231,12 +317,24 @@ export function VideoPlayerCanvas() {
   }, [getLayers, globalCanvas.activePageId, globalCanvas.pages]);
 
   useEffect(() => {
-    const width = Math.max(1, Number(globalCanvas.width || 1920));
-    const height = Math.max(1, Number(globalCanvas.height || 1080));
+    const width = Math.max(1, Number(globalCanvas.width || 1280));
+    const height = Math.max(1, Number(globalCanvas.height || 720));
     videoResolutionRef.current = { width, height };
     setVideoResolution({ width, height });
+    const canvas = fabricRef.current;
+    if (canvas) {
+      refitAllVideosToProjectCanvas(canvas, width, height, (videoObject) => {
+        const layer = getLayers().find((item) => item.objectId === videoObject.name);
+        if (!layer?.data) return null;
+        return {
+          width: Math.max(1, Number(layer.data.width || width)),
+          height: Math.max(1, Number(layer.data.height || height)),
+        };
+      });
+    }
+
     requestAnimationFrame(syncCanvasSize);
-  }, [globalCanvas.height, globalCanvas.width, syncCanvasSize]);
+  }, [globalCanvas.height, globalCanvas.width, getLayers, syncCanvasSize]);
 
   useEffect(() => {
     const canvas = fabricRef.current;
@@ -346,9 +444,49 @@ export function VideoPlayerCanvas() {
     const frames = resolveCompositionFrame(composition, currentTime);
     const canvas = fabricRef.current;
     const layers = getLayers();
-    const fabricManagedObjectIds = new Set<string>();
+    const projectWidth = Math.max(1, Number(globalCanvas.width || 1280));
+    const projectHeight = Math.max(1, Number(globalCanvas.height || 720));
 
     if (canvas) {
+      const container = containerRef.current;
+      if (container) {
+        const { width, height } = container.getBoundingClientRect();
+        fitFabricCanvasToContainer(
+          canvas,
+          width,
+          height,
+          projectWidth,
+          projectHeight,
+        );
+        const bounds = (canvas as any).artboardExportBounds as
+          | { left: number; top: number; width: number; height: number }
+          | undefined;
+        if (bounds) {
+          setArtboardFrame(bounds);
+        }
+      }
+
+      refitAllVideosToProjectCanvas(
+        canvas,
+        projectWidth,
+        projectHeight,
+        (videoObject) => {
+          const layer = layers.find((item) => item.objectId === videoObject.name);
+          if (!layer?.data) return null;
+          const videoEl = videoObject._videoEl;
+          return {
+            width: Math.max(
+              1,
+              Number(layer.data.width || videoEl?.videoWidth || projectWidth),
+            ),
+            height: Math.max(
+              1,
+              Number(layer.data.height || videoEl?.videoHeight || projectHeight),
+            ),
+          };
+        },
+      );
+
       layers.forEach((layer) => {
         if (layer.type !== "video" || !layer.objectId) return;
 
@@ -358,7 +496,6 @@ export function VideoPlayerCanvas() {
         const videoEl = object?._videoEl as HTMLVideoElement | undefined;
         if (!object || !videoEl) return;
 
-        fabricManagedObjectIds.add(layer.objectId);
         const frame = frames.find(
           (candidate) => candidate.scene.layer.objectId === layer.objectId,
         );
@@ -370,6 +507,7 @@ export function VideoPlayerCanvas() {
           currentTime < layerEnd;
 
         attachVideoOverlay(canvas, object, videoEl);
+        applyFabricTransformControls(object);
         object.set({
           selectable: layer.locked ? false : true,
           evented: layer.locked ? false : true,
@@ -378,22 +516,26 @@ export function VideoPlayerCanvas() {
           lockScalingX: Boolean(layer.locked),
           lockScalingY: Boolean(layer.locked),
           hasControls: !layer.locked,
+          hasBorders: !layer.locked,
         });
         object.visible = shouldShow;
-        setVideoOverlayVisibility(object, shouldShow);
-        setVideoOverlayOpacity(object, shouldShow ? (frame?.opacity ?? 1) : 0);
-        videoEl.style.filter = activeFilterCss;
+
+        if (shouldShow && frame) {
+          setVideoOverlayVisibility(object, true);
+          setVideoOverlayOpacity(object, frame.opacity ?? 1);
+          videoEl.style.filter = activeFilterCss;
+          syncVideoOverlay(object);
+        } else {
+          setVideoOverlayVisibility(object, false);
+          if (!videoEl.paused) videoEl.pause();
+          return;
+        }
 
         const linkedAudio = getLinkedVideoAudio(layer);
         videoEl.muted =
           isMuted || Boolean(linkedAudio && !linkedAudio.allowNativeAudio);
         videoEl.volume = volume;
         videoEl.playbackRate = playbackRate;
-
-        if (!shouldShow || !frame) {
-          if (!videoEl.paused) videoEl.pause();
-          return;
-        }
 
         const mediaStart = Number(layer.mediaStart || 0);
         const targetTime = mediaStart + (currentTime - layerStart);
@@ -416,66 +558,12 @@ export function VideoPlayerCanvas() {
       canvas.requestRenderAll();
     }
 
-    videos.forEach((video, index) => {
+    // Fabric-managed overlays render video; keep player elements hidden to avoid double display.
+    videos.forEach((video) => {
       if (!video) return;
-      const frame = frames[index];
-      if (
-        frame &&
-        fabricManagedObjectIds.has(frame.scene.layer.objectId || "")
-      ) {
-        video.style.opacity = "0";
-        video.style.display = "none";
-        if (!video.paused) video.pause();
-        return;
-      }
-
-      if (!frame) {
-        video.style.opacity = "0";
-        if (!video.paused) video.pause();
-        return;
-      }
-
-      const sourceUrl = frame.scene.layer.data?.url || videoUrl;
-      if (!sourceUrl) return;
-      const linkedAudio = getLinkedVideoAudio(frame.scene.layer);
-      const resolvedSource = resolveVideoPlaybackUrl(sourceUrl);
-      const syncPlayback = () => {
-        if (loadedVideoSourcesRef.current[index] !== resolvedSource) return;
-        if (video.readyState < 1) return;
-        if (Math.abs(video.currentTime - frame.sourceTime) > 0.12) {
-          video.currentTime = frame.sourceTime;
-        }
-
-        if (isPlaying && video.paused) {
-          video.play().catch(() => { });
-        } else if (!isPlaying && !video.paused) {
-          video.pause();
-        }
-      };
-
-      if (loadedVideoSourcesRef.current[index] !== resolvedSource) {
-        video.pause();
-        if (videoNeedsCrossOrigin(resolvedSource)) {
-          video.crossOrigin = "anonymous";
-        } else {
-          video.removeAttribute("crossorigin");
-        }
-        loadedVideoSourcesRef.current[index] = resolvedSource;
-        video.preload = "auto";
-        video.playsInline = true;
-        video.src = resolvedSource;
-        video.load();
-        video.addEventListener("loadedmetadata", syncPlayback, { once: true });
-      } else {
-        syncPlayback();
-      }
-
-      applyResolvedFramePresentation(video, frame, activeFilterCss);
-      video.style.display = "block";
-      video.muted =
-        isMuted || Boolean(linkedAudio && !linkedAudio.allowNativeAudio);
-      video.volume = volume;
-      video.playbackRate = playbackRate;
+      video.style.display = "none";
+      video.style.opacity = "0";
+      if (!video.paused) video.pause();
     });
 
     if (fabricRef.current) {
@@ -498,6 +586,9 @@ export function VideoPlayerCanvas() {
     composition,
     currentTime,
     getLayers,
+    globalCanvas.height,
+    globalCanvas.width,
+    globalCanvas.selectedLayerId,
     isMuted,
     isPlaying,
     playbackRate,
@@ -890,34 +981,46 @@ export function VideoPlayerCanvas() {
               ref={containerRef}
               className="group relative h-full w-auto max-h-full max-w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-[0_0_100px_rgba(37,99,235,0.1)]"
               style={{
-                aspectRatio: `${videoResolution.width} / ${videoResolution.height}`,
+                aspectRatio: `${projectSize.width} / ${projectSize.height}`,
               }}
             >
+              <div
+                className="pointer-events-none absolute z-0 bg-black"
+                style={{
+                  left: `${artboardFrame.left}px`,
+                  top: `${artboardFrame.top}px`,
+                  width: `${artboardFrame.width}px`,
+                  height: `${artboardFrame.height}px`,
+                }}
+              />
+
               <video
                 ref={videoARef}
-                className="absolute inset-0 h-full w-full object-contain"
+                className="pointer-events-none absolute inset-0 hidden h-full w-full"
                 playsInline
                 preload="auto"
+                aria-hidden
               />
               <video
                 ref={videoBRef}
-                className="absolute inset-0 h-full w-full object-contain"
+                className="pointer-events-none absolute inset-0 hidden h-full w-full"
                 playsInline
                 preload="auto"
+                aria-hidden
               />
 
-              {/* Fabric Overlay Canvas */}
+              {/* Fabric overlay must sit above the play dim layer for resize handles */}
               <canvas
                 ref={overlayCanvasRef}
-                className="absolute inset-0 pointer-events-auto"
+                className="absolute inset-0 z-30 pointer-events-auto"
               />
 
-              {!isPlaying && (
+              {!isPlaying && !globalCanvas.selectedLayerId && (
                 <button
                   type="button"
                   onClick={togglePlayback}
                   aria-label="Play video"
-                  className="absolute inset-0 z-20 flex cursor-pointer items-center justify-center border-0 bg-black/20 p-0 backdrop-blur-[1px] transition-all pointer-events-none group-hover:bg-black/30"
+                  className="absolute inset-0 z-10 flex cursor-pointer items-center justify-center border-0 bg-black/20 p-0 backdrop-blur-[1px] transition-all pointer-events-none group-hover:bg-black/30"
                 >
                   <span className="pointer-events-auto flex h-16 w-16 scale-90 items-center justify-center rounded-full bg-blue-600 shadow-2xl transition-transform group-hover:scale-100">
                     <Play className="ml-1 h-6 w-6 fill-white text-white" />
