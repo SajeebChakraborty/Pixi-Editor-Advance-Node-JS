@@ -1,6 +1,7 @@
 import type { Canvas, FabricObject } from "fabric";
 
-type VideoFabricObject = FabricObject & {
+export type VideoFabricObject = FabricObject & {
+  name?: string;
   _videoEl?: HTMLVideoElement;
   _videoOverlayElement?: HTMLVideoElement;
   _videoOverlayVisible?: boolean;
