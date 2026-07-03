@@ -12,7 +12,7 @@ import {
   syncVideoOverlays,
   syncVideoOverlay,
 } from "./video-overlay";
-import { applyFabricTransformControls } from "./fabric-transform-controls";
+import { applyFabricTransformControls, applyVideoOverlayControls } from "./fabric-transform-controls";
 import { buildVideoComposition } from "./video-composition";
 import {
   applyBorder,
@@ -726,15 +726,7 @@ export const addMediaFromUrl = async (
       });
       fabricImg.setCoords();
       if (useEditorStore.getState().editorMode === "video") {
-        applyFabricTransformControls(fabricImg);
-        fabricImg.set({
-          evented: true,
-          selectable: true,
-          lockMovementX: false,
-          lockMovementY: false,
-          hasControls: true,
-          hasBorders: true,
-        });
+        applyVideoOverlayControls(fabricImg);
       }
       liveCanvas.setActiveObject(fabricImg);
       syncFabricLayerStack(
@@ -839,6 +831,7 @@ export const addMediaFromUrl = async (
 
 export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric.Canvas, objectId: string) => {
   const { width, height } = useEditorStore.getState().canvas;
+  const isVideoMode = useEditorStore.getState().editorMode === "video";
   const fontFamily = options.fontFamily || "Roboto";
   const fontWeight = options.fontWeight || "normal";
   const fill = options.fill || "#ffffff";
@@ -853,6 +846,7 @@ export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric
     originX: "center",
     originY: "center",
     splitByGrapheme: false,
+    editable: isVideoMode ? false : true,
     ...options,
     name: objectId,
   });
@@ -866,7 +860,11 @@ export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric
   };
   fabricCanvas.add(textBox);
   fabricCanvas.setActiveObject(textBox);
-  syncFabricLayerStack(fabricCanvas, useEditorStore.getState().getLayers());
+  if (isVideoMode) {
+    applyVideoOverlayControls(textBox);
+  } else {
+    applyFabricTransformControls(textBox);
+  }
   attachMediaOverlay(fabricCanvas, textBox as any);
   return textBox;
 };

@@ -1,5 +1,7 @@
 import type { Canvas, FabricObject } from "fabric";
 import type { Layer } from "./store";
+import { useEditorStore } from "./store";
+import { applyVideoOverlayControls } from "./fabric-transform-controls";
 import { syncMediaOverlays } from "./media-overlay";
 import { syncVideoOverlays } from "./video-overlay";
 
@@ -96,8 +98,24 @@ export function syncFabricLayerStack(
       if (trackDelta !== 0) return trackDelta;
       return left.index - right.index;
     })
-    .forEach(({ object }) => {
+    .forEach(({ object, layer }) => {
       canvas.bringObjectToFront(object);
+      if (
+        useEditorStore.getState().editorMode === "video" &&
+        !(object as any)._videoEl
+      ) {
+        applyVideoOverlayControls(object);
+        object.set({
+          lockMovementX: Boolean(layer.locked),
+          lockMovementY: Boolean(layer.locked),
+          lockScalingX: Boolean(layer.locked),
+          lockScalingY: Boolean(layer.locked),
+          hasControls: !layer.locked,
+          hasBorders: !layer.locked,
+          evented: !layer.locked,
+          selectable: !layer.locked,
+        });
+      }
     });
 
   syncVideoOverlays(canvas);

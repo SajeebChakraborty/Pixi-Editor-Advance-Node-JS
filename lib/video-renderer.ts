@@ -15,9 +15,9 @@ import {
 } from "./linked-video-audio";
 import { buildVideoFilterCss, isEffectActiveAtTime } from "./video-filters";
 import {
-  beginOverlayExportPass,
-  drawOverlayExportPass,
-  endOverlayExportPass,
+  clearOverlayImageCache,
+  drawCompositionOverlays,
+  preloadOverlayImages,
 } from "./video-export-overlays";
 
 export type VideoExportFormat = "mp4" | "webm";
@@ -302,6 +302,9 @@ export const exportVideo = async (
   audioDestination.stream
     .getAudioTracks()
     .forEach((track) => stream.addTrack(track));
+
+  await preloadOverlayImages(layers, fabricCanvas);
+
   const mediaRecorder = new MediaRecorder(
     stream,
     mimeType ? { mimeType } : undefined,
@@ -484,12 +487,7 @@ export const exportVideo = async (
         compositionTime < end;
     });
 
-    const overlayState = beginOverlayExportPass(fabricCanvas);
-    try {
-      drawOverlayExportPass(context, fabricCanvas, width, height);
-    } finally {
-      endOverlayExportPass(fabricCanvas, overlayState);
-    }
+    drawCompositionOverlays(context, fabricCanvas, layers, compositionTime);
 
     store.setVideoState({ currentTime: compositionTime, isPlaying: false });
     if (elapsed >= exportDuration) {
@@ -529,6 +527,7 @@ export const exportVideo = async (
     });
     stream.getTracks().forEach((track) => track.stop());
     await audioContext.close();
+    clearOverlayImageCache();
     store.setVideoState(previousVideoState);
     layers.forEach((layer) => {
       if (!layer.objectId) return;

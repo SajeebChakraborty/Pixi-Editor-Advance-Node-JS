@@ -50,6 +50,7 @@ import { syncFabricLayerStack } from "@/lib/layer-stack";
 import { detachMediaOverlays, syncMediaOverlays, attachMediaOverlay, isMediaOverlayObject } from "@/lib/media-overlay";
 import {
   applyFabricTransformControls,
+  applyVideoOverlayControls,
   installFabricTransformControlDefaults,
 } from "@/lib/fabric-transform-controls";
 
@@ -380,7 +381,7 @@ export function VideoPlayerCanvas() {
           (object as any).startTime = Number(layer.startTime || 0);
           (object as any).duration = Number(layer.duration || 3600);
           applyPersistedLayerState(object, layer);
-          applyFabricTransformControls(object);
+          applyVideoOverlayControls(object);
           attachMediaOverlay(canvas, object as any, layer);
           continue;
         }
@@ -416,7 +417,7 @@ export function VideoPlayerCanvas() {
             applyFabricTransformControls(object);
           } else {
             applyPersistedLayerState(object, layer);
-            applyFabricTransformControls(object);
+            applyVideoOverlayControls(object);
             attachMediaOverlay(canvas, object as any, layer);
             (object as any)._syncMediaOverlay?.();
           }

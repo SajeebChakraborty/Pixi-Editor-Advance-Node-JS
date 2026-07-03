@@ -2,7 +2,7 @@
 
 import { Button } from "@/components/ui/button";
 import { commitCanvasHistory, getActiveFabricCanvas } from "@/lib/editor-actions";
-import { applyFabricTransformControls } from "@/lib/fabric-transform-controls";
+import { applyFabricTransformControls, applyVideoOverlayControls } from "@/lib/fabric-transform-controls";
 import { getNextOverlayTrack } from "@/lib/timeline-tracks";
 import { syncFabricLayerStack } from "@/lib/layer-stack";
 import { attachMediaOverlay } from "@/lib/media-overlay";
@@ -127,7 +127,7 @@ export function TextTool() {
       fontSize,
       originX: "center",
       originY: "center",
-      editable: true,
+      editable: store.editorMode === "video" ? false : true,
       splitByGrapheme: false,
       ...options,
     });
@@ -148,6 +148,8 @@ export function TextTool() {
     fabricCanvas.add(textBox);
     fabricCanvas.setActiveObject(textBox);
     if (store.editorMode === "video") {
+      applyVideoOverlayControls(textBox);
+    } else {
       applyFabricTransformControls(textBox);
     }
     syncFabricLayerStack(fabricCanvas, store.getLayers());
