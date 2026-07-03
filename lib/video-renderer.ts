@@ -197,7 +197,7 @@ export const exportVideo = async (
   await Promise.all(
     composition.scenes.map(async (scene) => {
       const sourceUrl = scene.layer.data?.url;
-      if (!sourceUrl || sourceVideos.has(sourceUrl)) return;
+      if (!sourceUrl || sourceVideos.has(scene.layer.id)) return;
       const video = document.createElement("video");
       const resolvedSource = resolveVideoPlaybackUrl(sourceUrl);
       if (videoNeedsCrossOrigin(resolvedSource)) {
@@ -208,7 +208,7 @@ export const exportVideo = async (
       video.playsInline = true;
       video.src = resolvedSource;
       video.load();
-      sourceVideos.set(sourceUrl, video);
+      sourceVideos.set(scene.layer.id, video);
       await waitForMetadata(video);
     }),
   );
@@ -226,12 +226,12 @@ export const exportVideo = async (
   const audioDestination = audioContext.createMediaStreamDestination();
   const sourceVideoGains = new Map<string, GainNode>();
 
-  sourceVideos.forEach((video, sourceUrl) => {
+  sourceVideos.forEach((video, layerId) => {
     const source = audioContext.createMediaElementSource(video);
     const gain = audioContext.createGain();
     gain.gain.value = 0;
     source.connect(gain).connect(audioDestination);
-    sourceVideoGains.set(sourceUrl, gain);
+    sourceVideoGains.set(layerId, gain);
   });
 
   const audioLayers = layers.filter(
@@ -345,15 +345,13 @@ export const exportVideo = async (
       rangeStart + elapsed * playbackRate,
     );
     const frames = resolveCompositionFrame(composition, compositionTime);
-    const activeUrls = new Set(
-      frames
-        .map((frame) => frame.scene.layer.data?.url)
-        .filter((url): url is string => Boolean(url)),
+    const activeLayerIds = new Set(
+      frames.map((frame) => frame.scene.layer.id),
     );
 
-    sourceVideos.forEach((video, url) => {
-      if (!activeUrls.has(url)) {
-        sourceVideoGains.get(url)?.gain.setValueAtTime(
+    sourceVideos.forEach((video, layerId) => {
+      if (!activeLayerIds.has(layerId)) {
+        sourceVideoGains.get(layerId)?.gain.setValueAtTime(
           0,
           audioContext.currentTime,
         );
@@ -371,9 +369,12 @@ export const exportVideo = async (
     )
       ? buildVideoFilterCss(store.videoState.filters)
       : buildVideoFilterCss();
-    frames.forEach((frame) => {
-      const sourceUrl = frame.scene.layer.data?.url;
-      const video = sourceUrl ? sourceVideos.get(sourceUrl) : undefined;
+    frames
+      .slice()
+      .sort((left, right) => left.scene.order - right.scene.order)
+      .forEach((frame) => {
+      const layerId = frame.scene.layer.id;
+      const video = sourceVideos.get(layerId);
       if (!video || video.readyState < 2) return;
       video.playbackRate = playbackRate;
       if (Math.abs(video.currentTime - frame.sourceTime) > 0.12) {
@@ -385,7 +386,7 @@ export const exportVideo = async (
       }
       if (video.paused) void video.play().catch(() => {});
       const customAudio = getLinkedVideoAudio(frame.scene.layer);
-      sourceVideoGains.get(sourceUrl)?.gain.setValueAtTime(
+      sourceVideoGains.get(layerId)?.gain.setValueAtTime(
         store.videoState.isMuted ||
           Boolean(customAudio && !customAudio.allowNativeAudio)
           ? 0

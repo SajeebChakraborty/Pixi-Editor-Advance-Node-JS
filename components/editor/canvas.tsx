@@ -51,8 +51,6 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
     deletePage,
     addPage,
     renamePage,
-    undo,
-    redo,
     saveToHistory,
     setZoom,
   } = useEditorStore();
@@ -173,17 +171,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
       if (isTyping) return;
 
-      if (isCmd && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        if (isShift) {
-          redo();
-        } else {
-          undo();
-        }
-      } else if (isCmd && e.key.toLowerCase() === "y") {
-        e.preventDefault();
-        redo();
-      } else if (
+      if (
         ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"].includes(e.key)
       ) {
         const canvas = useEditorStore.getState().canvas.fabricCanvas;
@@ -255,7 +243,7 @@ function PageCanvas({ pageId, index }: PageCanvasProps) {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isActive, undo, redo]);
+  }, [isActive]);
 
   useEffect(() => {
     if (!canvasRef.current || fabricCanvasRef.current) return;

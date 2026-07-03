@@ -35,6 +35,7 @@ import {
 import {
   buildVideoFilterCss,
   isEffectActiveAtTime,
+  applyResolvedFramePresentation,
 } from "@/lib/video-filters";
 import {
   attachVideoOverlay,
@@ -624,6 +625,11 @@ export function VideoPlayerCanvas() {
         },
       );
 
+      const pendingPresentations: Array<{
+        videoEl: HTMLVideoElement;
+        frame: (typeof frames)[number];
+      }> = [];
+
       layers.forEach((layer) => {
         if (layer.type !== "video" || !layer.objectId) return;
 
@@ -636,14 +642,22 @@ export function VideoPlayerCanvas() {
         const frame = frames.find(
           (candidate) => candidate.scene.layer.objectId === layer.objectId,
         );
-        const layerStart = Number(layer.startTime || 0);
-        const layerEnd = layerStart + Number(layer.duration || 0);
+        const scene = composition.scenes.find(
+          (candidate) => candidate.layer.objectId === layer.objectId,
+        );
+        const layerStart = scene?.timelineStart ?? Number(layer.startTime || 0);
+        const layerEnd =
+          scene?.timelineEnd ??
+          layerStart + Number(layer.duration || 0);
         const shouldShow =
           layer.visible !== false &&
+          Boolean(frame) &&
           currentTime >= layerStart &&
           currentTime < layerEnd;
 
-        attachVideoOverlay(canvas, object, videoEl);
+        if (object._videoOverlayElement !== videoEl) {
+          attachVideoOverlay(canvas, object, videoEl);
+        }
         applyVideoResizeControls(object);
         object.set({
           selectable: layer.locked ? false : true,
@@ -660,9 +674,13 @@ export function VideoPlayerCanvas() {
 
         if (shouldShow && frame) {
           setVideoOverlayVisibility(object, true);
-          setVideoOverlayOpacity(object, frame.opacity ?? 1);
           videoEl.style.filter = activeFilterCss;
-          syncVideoOverlay(object);
+
+          if (object._userTransform) {
+            setVideoOverlayOpacity(object, frame.opacity ?? 1);
+          } else {
+            pendingPresentations.push({ videoEl, frame });
+          }
         } else {
           setVideoOverlayVisibility(object, false);
           if (!videoEl.paused) videoEl.pause();
@@ -692,8 +710,13 @@ export function VideoPlayerCanvas() {
         }
       });
 
-      syncVideoOverlays(canvas);
       syncFabricLayerStack(canvas, getLayers());
+
+      pendingPresentations.forEach(({ videoEl, frame }) => {
+        applyResolvedFramePresentation(videoEl, frame, activeFilterCss);
+        videoEl.style.zIndex = String(10 + frame.scene.order);
+      });
+
       canvas.requestRenderAll();
     }
 

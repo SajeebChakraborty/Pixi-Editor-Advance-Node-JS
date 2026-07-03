@@ -170,6 +170,19 @@ const mergeFrameStyles = (
   },
 });
 
+export const getSceneOverlapDuration = (
+  transition: SceneTransition,
+  leftDuration: number,
+  rightDuration: number,
+) => {
+  if (transition.type === "none" || transition.duration <= 0) return 0;
+  return Math.min(
+    transition.duration,
+    leftDuration / 2,
+    rightDuration / 2,
+  );
+};
+
 export const normalizeTransition = (
   value: unknown,
   maxDuration = Number.POSITIVE_INFINITY,
@@ -234,17 +247,14 @@ export const buildVideoComposition = (
         ? Math.min(requestedDuration, Math.max(MIN_SCENE_DURATION, sourceDuration - sourceStart))
         : requestedDuration;
     const previousScene = scenes[index - 1];
-    const requestedBefore = normalizeTransition(layer.data?.transitionBefore);
-    const previousAfter = previousScene?.transitionAfter;
-    const boundaryTransition =
-      previousAfter?.type && previousAfter.type !== "none"
-        ? previousAfter
-        : requestedBefore;
+    const boundaryTransition = previousScene
+      ? normalizeTransition(previousScene.layer.data?.transitionAfter)
+      : { type: "none" as const, duration: 0 };
     const overlap = previousScene
-      ? Math.min(
-          boundaryTransition.duration,
-          previousScene.duration / 2,
-          duration / 2,
+      ? getSceneOverlapDuration(
+          boundaryTransition,
+          previousScene.duration,
+          duration,
         )
       : 0;
 
@@ -296,14 +306,16 @@ export const resolveCompositionFrame = (
     let style = defaultFrameStyle();
     const previousScene = composition.scenes[scene.order - 1];
     const nextScene = composition.scenes[scene.order + 1];
+    const sceneElapsed = safeTime - scene.timelineStart;
 
     if (
       previousScene &&
       scene.transitionBefore.type !== "none" &&
-      safeTime < previousScene.timelineEnd
+      scene.transitionBefore.duration > 0 &&
+      sceneElapsed < scene.transitionBefore.duration
     ) {
       const progress = getTransitionProgress(
-        safeTime - scene.timelineStart,
+        sceneElapsed,
         scene.transitionBefore.duration,
       );
       style = mergeFrameStyles(
@@ -315,44 +327,70 @@ export const resolveCompositionFrame = (
     if (
       nextScene &&
       nextScene.transitionBefore.type !== "none" &&
-      safeTime >= nextScene.timelineStart
+      nextScene.transitionBefore.duration > 0
     ) {
-      const progress = getTransitionProgress(
-        safeTime - nextScene.timelineStart,
-        nextScene.transitionBefore.duration,
-      );
-      style = mergeFrameStyles(
-        style,
-        applyExitTransition(nextScene.transitionBefore.type, progress),
-      );
+      const junctionElapsed = safeTime - nextScene.timelineStart;
+      if (
+        junctionElapsed >= 0 &&
+        junctionElapsed < nextScene.transitionBefore.duration
+      ) {
+        const progress = getTransitionProgress(
+          junctionElapsed,
+          nextScene.transitionBefore.duration,
+        );
+        style = mergeFrameStyles(
+          style,
+          applyExitTransition(nextScene.transitionBefore.type, progress),
+        );
+      }
     }
 
     if (
       !previousScene &&
-      scene.transitionBefore.type === "fade" &&
-      scene.transitionBefore.duration > 0
+      scene.transitionBefore.type !== "none" &&
+      scene.transitionBefore.duration > 0 &&
+      sceneElapsed < scene.transitionBefore.duration
     ) {
-      style.opacity = Math.min(
-        style.opacity,
-        getTransitionProgress(
-          safeTime - scene.timelineStart,
-          scene.transitionBefore.duration,
-        ),
+      const progress = getTransitionProgress(
+        sceneElapsed,
+        scene.transitionBefore.duration,
+      );
+      style = mergeFrameStyles(
+        style,
+        applyEnterTransition(scene.transitionBefore.type, progress),
+      );
+    }
+
+    const userStart = normalizeTransition(scene.layer.data?.transitionBefore);
+    if (
+      previousScene &&
+      userStart.type !== "none" &&
+      userStart.duration > 0 &&
+      sceneElapsed < userStart.duration
+    ) {
+      const progress = getTransitionProgress(sceneElapsed, userStart.duration);
+      style = mergeFrameStyles(
+        style,
+        applyEnterTransition(userStart.type, progress),
       );
     }
 
     if (
       !nextScene &&
-      scene.transitionAfter.type === "fade" &&
+      scene.transitionAfter.type !== "none" &&
       scene.transitionAfter.duration > 0
     ) {
-      style.opacity = Math.min(
-        style.opacity,
-        getTransitionProgress(
-          scene.timelineEnd - safeTime,
+      const remaining = scene.timelineEnd - safeTime;
+      if (remaining <= scene.transitionAfter.duration) {
+        const progress = getTransitionProgress(
+          scene.transitionAfter.duration - remaining,
           scene.transitionAfter.duration,
-        ),
-      );
+        );
+        style = mergeFrameStyles(
+          style,
+          applyExitTransition(scene.transitionAfter.type, progress),
+        );
+      }
     }
 
     return {
@@ -385,8 +423,6 @@ export const synchronizeVideoSceneLayers = (layers: Layer[]): Layer[] => {
       data: {
         ...(layer.data || {}),
         sceneOrder: scene.order,
-        transitionBefore: scene.transitionBefore,
-        transitionAfter: scene.transitionAfter,
       },
     };
   });

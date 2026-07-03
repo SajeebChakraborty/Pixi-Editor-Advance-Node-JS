@@ -244,7 +244,7 @@ function getOverlayRoot(canvas: Canvas) {
     root.setAttribute(OVERLAY_ROOT_ATTRIBUTE, "");
     Object.assign(root.style, {
       position: "absolute",
-      overflow: "hidden",
+      overflow: "visible",
       pointerEvents: "none",
       zIndex: "5",
       background: "transparent",
@@ -261,7 +261,7 @@ function getOverlayRoot(canvas: Canvas) {
       top: `${bounds.top}px`,
       width: `${bounds.width}px`,
       height: `${bounds.height}px`,
-      overflow: "hidden",
+      overflow: "visible",
     });
   }
 

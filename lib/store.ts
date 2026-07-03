@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { Canvas } from 'fabric'
 import {
   buildVideoComposition,
+  getSceneOverlapDuration,
   reorderVideoScenes,
   synchronizeVideoSceneLayers,
   type SceneTransition,
@@ -224,7 +225,11 @@ export interface EditorState {
   reorderVideoScene: (layerId: string, targetIndex: number) => void
   setVideoSceneTransition: (
     layerId: string,
-    side: 'before' | 'after',
+    side: 'before' | 'after' | 'junction',
+    transition: SceneTransition,
+  ) => void
+  setJunctionTransition: (
+    leftLayerId: string,
     transition: SceneTransition,
   ) => void
   getLayers: () => Layer[]
@@ -232,6 +237,7 @@ export interface EditorState {
 
   // History/Undo-Redo
   saveToHistory: (snapshot: string) => void
+  saveActiveCanvasToHistory: () => void
   undo: () => void
   redo: () => void
   canUndo: () => boolean
@@ -391,6 +397,51 @@ const disposeVideoObjects = (fabricCanvas: Canvas) => {
   fabricCanvas.getObjects().forEach((object: any) => {
     object?._disposeVideo?.()
     object?._cleanupVideoOverlay?.()
+  })
+}
+
+const getActiveFabricCanvas = (state: {
+  editorMode: EditorMode
+  canvas: CanvasState
+  videoFabricCanvas: Canvas | null
+}) =>
+  state.editorMode === 'video'
+    ? state.videoFabricCanvas
+    : state.canvas.fabricCanvas
+
+const applyHistoryCanvasUpdate = (
+  set: (
+    partial:
+      | Partial<EditorState>
+      | ((state: EditorState) => Partial<EditorState>),
+  ) => void,
+  snapshot: CanvasHistorySnapshot,
+  historyIndex: number,
+) => {
+  set((state) => {
+    const nextCanvas = {
+      ...state.canvas,
+      pages: snapshot.pages.length
+        ? clonePages(snapshot.pages)
+        : state.canvas.pages,
+      activePageId: snapshot.activePageId || state.canvas.activePageId,
+      selectedLayerId: snapshot.selectedLayerId || null,
+      width: snapshot.width || state.canvas.width,
+      height: snapshot.height || state.canvas.height,
+      historyIndex,
+    }
+
+    return {
+      canvas: nextCanvas,
+      photoCanvasState:
+        state.editorMode === 'photo'
+          ? { ...nextCanvas, fabricCanvas: null }
+          : state.photoCanvasState,
+      videoCanvasState:
+        state.editorMode === 'video'
+          ? { ...nextCanvas, fabricCanvas: null }
+          : state.videoCanvasState,
+    }
   })
 }
 
@@ -710,10 +761,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       setTimeout(() => {
         get().recalculateTotalDuration()
-        const fabricCanvas = get().canvas.fabricCanvas
-        if (fabricCanvas) {
-          get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
-        }
+        get().saveActiveCanvasToHistory()
       }, 0)
 
       return {
@@ -766,10 +814,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       
       setTimeout(() => {
         get().recalculateTotalDuration()
-        const fabricCanvas = get().canvas.fabricCanvas
-        if (fabricCanvas) {
-          get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
-        }
+        get().saveActiveCanvasToHistory()
       }, 0)
 
       return {
@@ -888,7 +933,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     const layerToDuplicate = activePage.layers.find((l) => l.id === layerId)
     if (!layerToDuplicate) return
 
-    const sourceObject = state.canvas.fabricCanvas
+    const fabricCanvas = getActiveFabricCanvas(state)
+    const sourceObject = fabricCanvas
       ?.getObjects()
       .find((object) => (object as any).name === layerToDuplicate.objectId)
 
@@ -905,20 +951,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       name: `${layerToDuplicate.name} copy`,
     }
 
-    if (sourceObject && state.canvas.fabricCanvas && newObjectId) {
-      const fabricCanvas = state.canvas.fabricCanvas
-      Promise.resolve((sourceObject as any).clone()).then((cloned: any) => {
-        cloned.set({
-          left: (sourceObject.left || 0) + 24,
-          top: (sourceObject.top || 0) + 24,
-          name: newObjectId,
+    if (sourceObject && newObjectId) {
+      const fabricCanvas = getActiveFabricCanvas(state)
+      if (fabricCanvas) {
+        Promise.resolve((sourceObject as any).clone()).then((cloned: any) => {
+          cloned.set({
+            left: (sourceObject.left || 0) + 24,
+            top: (sourceObject.top || 0) + 24,
+            name: newObjectId,
+          })
+          fabricCanvas.add(cloned)
+          fabricCanvas.setActiveObject(cloned)
+          cloned.setCoords()
+          fabricCanvas.requestRenderAll()
+          get().saveActiveCanvasToHistory()
         })
-        fabricCanvas.add(cloned)
-        fabricCanvas.setActiveObject(cloned)
-        cloned.setCoords()
-        fabricCanvas.requestRenderAll()
-        get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
-      })
+      }
     }
 
     const newPages = state.canvas.pages.map((p) =>
@@ -1206,24 +1254,102 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   },
 
   setVideoSceneTransition: (layerId, side, transition) => {
+    if (side === 'junction' || side === 'after') {
+      get().setJunctionTransition(layerId, transition)
+      return
+    }
     set((state) => ({
       canvas: {
         ...state.canvas,
         pages: state.canvas.pages.map((page) => {
           if (page.id !== state.canvas.activePageId) return page
+          const composition = buildVideoComposition(page.layers)
+          const scene = composition.scenes.find(
+            (candidate) => candidate.layer.id === layerId,
+          )
+          const clampedTransition: SceneTransition =
+            transition.type === 'none'
+              ? { type: 'none', duration: 0 }
+              : {
+                  ...transition,
+                  duration: Math.min(
+                    transition.duration,
+                    Math.max(0.1, (scene?.duration || 0) / 2),
+                  ),
+                }
           const updatedLayers = page.layers.map((layer) =>
             layer.id === layerId
               ? {
                   ...layer,
                   data: {
                     ...(layer.data || {}),
-                    [side === 'before'
-                      ? 'transitionBefore'
-                      : 'transitionAfter']: transition,
+                    transitionBefore: clampedTransition,
                   },
                 }
               : layer,
           )
+          return {
+            ...page,
+            layers: synchronizeVideoSceneLayers(updatedLayers),
+          }
+        }),
+      },
+    }))
+    get().recalculateTotalDuration()
+  },
+
+  setJunctionTransition: (leftLayerId, transition) => {
+    set((state) => ({
+      canvas: {
+        ...state.canvas,
+        pages: state.canvas.pages.map((page) => {
+          if (page.id !== state.canvas.activePageId) return page
+
+          const composition = buildVideoComposition(page.layers)
+          const leftIndex = composition.scenes.findIndex(
+            (scene) => scene.layer.id === leftLayerId,
+          )
+          const rightScene =
+            leftIndex >= 0 ? composition.scenes[leftIndex + 1] : undefined
+
+          const leftScene =
+            leftIndex >= 0 ? composition.scenes[leftIndex] : undefined
+          const clampedTransition: SceneTransition =
+            transition.type === 'none'
+              ? { type: 'none', duration: 0 }
+              : rightScene && leftScene
+                ? {
+                    ...transition,
+                    duration: Math.max(
+                      0.1,
+                      getSceneOverlapDuration(
+                        transition,
+                        leftScene.duration,
+                        rightScene.duration,
+                      ),
+                    ),
+                  }
+                : {
+                    ...transition,
+                    duration: Math.min(
+                      transition.duration,
+                      Math.max(0.1, (leftScene?.duration || 0) / 2),
+                    ),
+                  }
+
+          const updatedLayers = page.layers.map((layer) => {
+            if (layer.id === leftLayerId) {
+              return {
+                ...layer,
+                data: {
+                  ...(layer.data || {}),
+                  transitionAfter: clampedTransition,
+                },
+              }
+            }
+            return layer
+          })
+
           return {
             ...page,
             layers: synchronizeVideoSceneLayers(updatedLayers),
@@ -1309,83 +1435,77 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     })
   },
 
-  undo: () => {
-    const { historyIndex, history, fabricCanvas } = get().canvas
-    if (historyIndex > 0) {
-      const prevSnapshot = parseHistorySnapshot(history[historyIndex - 1])
-      if (!fabricCanvas || !isValidHistorySnapshot(prevSnapshot)) return
+  saveActiveCanvasToHistory: () => {
+    const state = get()
+    const fabricCanvas = getActiveFabricCanvas(state)
+    if (!fabricCanvas || (fabricCanvas as any).isHistoryLoading) return
+    get().saveToHistory(JSON.stringify(fabricCanvas.toJSON()))
+  },
 
-      ;(fabricCanvas as any).isHistoryLoading = true
-      disposeVideoObjects(fabricCanvas)
-      fabricCanvas
-        .loadFromJSON(prevSnapshot!.fabric)
-        .then(() => {
-          fabricCanvas.discardActiveObject()
-          fabricCanvas.renderAll()
-          set((state) => ({
-            canvas: {
-              ...state.canvas,
-              pages: prevSnapshot!.pages.length
-                ? clonePages(prevSnapshot!.pages)
-                : state.canvas.pages,
-              activePageId:
-                prevSnapshot!.activePageId || state.canvas.activePageId,
-              selectedLayerId: prevSnapshot!.selectedLayerId || null,
-              width: prevSnapshot!.width || state.canvas.width,
-              height: prevSnapshot!.height || state.canvas.height,
-              historyIndex: Math.max(0, state.canvas.historyIndex - 1),
-            },
-          }))
-          get().recalculateTotalDuration()
-        })
-        .catch((error) => {
-          console.error("[EDITOR_HISTORY] Undo restore failed:", error)
-        })
-        .finally(() => {
-          ;(fabricCanvas as any).isHistoryLoading = false
-        })
-    }
+  undo: () => {
+    const state = get()
+    const { historyIndex, history } = state.canvas
+    const fabricCanvas = getActiveFabricCanvas(state)
+    if (historyIndex <= 0 || !fabricCanvas) return
+
+    const prevSnapshot = parseHistorySnapshot(history[historyIndex - 1])
+    if (!isValidHistorySnapshot(prevSnapshot)) return
+
+    ;(fabricCanvas as any).isHistoryLoading = true
+    disposeVideoObjects(fabricCanvas)
+    fabricCanvas
+      .loadFromJSON(prevSnapshot!.fabric)
+      .then(async () => {
+        fabricCanvas.discardActiveObject()
+        applyHistoryCanvasUpdate(set, prevSnapshot!, historyIndex - 1)
+        const { rehydrateCanvasMediaAfterHistory } = await import(
+          './editor-utils'
+        )
+        await rehydrateCanvasMediaAfterHistory(
+          fabricCanvas,
+          get().getLayers(),
+        )
+        get().recalculateTotalDuration()
+      })
+      .catch((error) => {
+        console.error("[EDITOR_HISTORY] Undo restore failed:", error)
+      })
+      .finally(() => {
+        ;(fabricCanvas as any).isHistoryLoading = false
+      })
   },
 
   redo: () => {
-    const { historyIndex, history, fabricCanvas } = get().canvas
-    if (historyIndex < history.length - 1) {
-      const nextSnapshot = parseHistorySnapshot(history[historyIndex + 1])
-      if (!fabricCanvas || !isValidHistorySnapshot(nextSnapshot)) return
+    const state = get()
+    const { historyIndex, history } = state.canvas
+    const fabricCanvas = getActiveFabricCanvas(state)
+    if (historyIndex >= history.length - 1 || !fabricCanvas) return
 
-      ;(fabricCanvas as any).isHistoryLoading = true
-      disposeVideoObjects(fabricCanvas)
-      fabricCanvas
-        .loadFromJSON(nextSnapshot!.fabric)
-        .then(() => {
-          fabricCanvas.discardActiveObject()
-          fabricCanvas.renderAll()
-          set((state) => ({
-            canvas: {
-              ...state.canvas,
-              pages: nextSnapshot!.pages.length
-                ? clonePages(nextSnapshot!.pages)
-                : state.canvas.pages,
-              activePageId:
-                nextSnapshot!.activePageId || state.canvas.activePageId,
-              selectedLayerId: nextSnapshot!.selectedLayerId || null,
-              width: nextSnapshot!.width || state.canvas.width,
-              height: nextSnapshot!.height || state.canvas.height,
-              historyIndex: Math.min(
-                state.canvas.history.length - 1,
-                state.canvas.historyIndex + 1,
-              ),
-            },
-          }))
-          get().recalculateTotalDuration()
-        })
-        .catch((error) => {
-          console.error("[EDITOR_HISTORY] Redo restore failed:", error)
-        })
-        .finally(() => {
-          ;(fabricCanvas as any).isHistoryLoading = false
-        })
-    }
+    const nextSnapshot = parseHistorySnapshot(history[historyIndex + 1])
+    if (!isValidHistorySnapshot(nextSnapshot)) return
+
+    ;(fabricCanvas as any).isHistoryLoading = true
+    disposeVideoObjects(fabricCanvas)
+    fabricCanvas
+      .loadFromJSON(nextSnapshot!.fabric)
+      .then(async () => {
+        fabricCanvas.discardActiveObject()
+        applyHistoryCanvasUpdate(set, nextSnapshot!, historyIndex + 1)
+        const { rehydrateCanvasMediaAfterHistory } = await import(
+          './editor-utils'
+        )
+        await rehydrateCanvasMediaAfterHistory(
+          fabricCanvas,
+          get().getLayers(),
+        )
+        get().recalculateTotalDuration()
+      })
+      .catch((error) => {
+        console.error("[EDITOR_HISTORY] Redo restore failed:", error)
+      })
+      .finally(() => {
+        ;(fabricCanvas as any).isHistoryLoading = false
+      })
   },
 
   canUndo: () => get().canvas.historyIndex > 0,

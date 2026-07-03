@@ -33,7 +33,7 @@ export interface TimelineSegment {
   selectable?: boolean
   draggable?: boolean
   resizable?: boolean
-  transitionSide?: 'before' | 'after'
+  transitionSide?: 'before' | 'after' | 'junction'
   transitionType?: string
   linkedLayerName?: string
 }
@@ -157,50 +157,88 @@ export const buildTimelineRows = ({
 
   const transitionSegments: TimelineSegment[] = []
   composition.scenes.forEach((scene, index) => {
-    const layerName = scene.layer.name || 'Video'
-    const before = scene.transitionBefore
-    if (before.type !== 'none' && before.duration > 0) {
-      const overlapStart = Math.max(
-        0,
-        scene.timelineStart - before.duration,
-      )
+    const nextScene = composition.scenes[index + 1]
+    const storedStart = scene.layer.data?.transitionBefore
+    const start =
+      storedStart &&
+      typeof storedStart === 'object' &&
+      storedStart.type &&
+      storedStart.type !== 'none'
+        ? {
+            type: storedStart.type,
+            duration: Number(storedStart.duration) || 0,
+          }
+        : index === 0
+          ? scene.transitionBefore
+          : null
+
+    if (start && start.type !== 'none' && start.duration > 0) {
+        transitionSegments.push({
+          id: `transition-start-${scene.id}`,
+          kind: 'transition',
+          label: transitionLabel(start.type),
+          startTime: scene.timelineStart,
+          duration: start.duration,
+          layerId: scene.layer.id,
+          virtual: true,
+          selectable: true,
+          draggable: false,
+          resizable: true,
+          transitionSide: 'before',
+          transitionType: start.type,
+        linkedLayerName: scene.layer.name || 'Video',
+      })
+    }
+
+    if (nextScene) {
+      const effectiveDuration = nextScene.transitionBefore.duration
+      const junction = scene.transitionAfter
+      if (
+        junction.type === 'none' ||
+        effectiveDuration <= 0 ||
+        nextScene.transitionBefore.type === 'none'
+      ) {
+        return
+      }
+
+      const leftName = scene.layer.name || 'Video'
+      const rightName = nextScene.layer.name || 'Video'
+      const overlapStart = Math.max(0, scene.timelineEnd - effectiveDuration)
+
       transitionSegments.push({
-        id: `transition-before-${scene.id}`,
+        id: `transition-junction-${scene.id}`,
         kind: 'transition',
-        label: `${index === 0 ? 'Open' : 'In'}: ${transitionLabel(before.type)}`,
+        label: transitionLabel(nextScene.transitionBefore.type),
         startTime: overlapStart,
-        duration: before.duration,
+        duration: effectiveDuration,
         layerId: scene.layer.id,
         virtual: true,
         selectable: true,
         draggable: false,
         resizable: true,
-        transitionSide: 'before',
-        transitionType: before.type,
-        linkedLayerName: layerName,
+        transitionSide: 'junction',
+        transitionType: nextScene.transitionBefore.type,
+        linkedLayerName: `${leftName} → ${rightName}`,
       })
+      return
     }
 
-    const after = scene.transitionAfter
-    if (after.type !== 'none' && after.duration > 0) {
-      const overlapStart = Math.max(
-        0,
-        scene.timelineEnd - after.duration,
-      )
+    const end = scene.transitionAfter
+    if (end.type !== 'none' && end.duration > 0) {
       transitionSegments.push({
-        id: `transition-after-${scene.id}`,
+        id: `transition-end-${scene.id}`,
         kind: 'transition',
-        label: `Out: ${transitionLabel(after.type)}`,
-        startTime: overlapStart,
-        duration: after.duration,
+        label: transitionLabel(end.type),
+        startTime: Math.max(scene.timelineStart, scene.timelineEnd - end.duration),
+        duration: end.duration,
         layerId: scene.layer.id,
         virtual: true,
         selectable: true,
         draggable: false,
         resizable: true,
         transitionSide: 'after',
-        transitionType: after.type,
-        linkedLayerName: layerName,
+        transitionType: end.type,
+        linkedLayerName: scene.layer.name || 'Video',
       })
     }
   })

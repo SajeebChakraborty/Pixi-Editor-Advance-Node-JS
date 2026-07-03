@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useEditorStore } from "@/lib/store";
 import {
   Undo2,
@@ -40,8 +40,39 @@ export function TopBar() {
   const renameProject = useEditorStore((state) => state.renameProject);
   const undo = useEditorStore((state) => state.undo);
   const redo = useEditorStore((state) => state.redo);
-  const canUndo = useEditorStore((state) => state.canUndo);
-  const canRedo = useEditorStore((state) => state.canRedo);
+  const historyIndex = useEditorStore((state) => state.canvas.historyIndex);
+  const historyLength = useEditorStore((state) => state.canvas.history.length);
+  const canUndoNow = historyIndex > 0;
+  const canRedoNow = historyIndex < historyLength - 1;
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isMod = event.metaKey || event.ctrlKey;
+      if (!isMod) return;
+
+      const target = event.target as HTMLElement | null;
+      const isTyping =
+        target?.tagName === "INPUT" ||
+        target?.tagName === "TEXTAREA" ||
+        target?.isContentEditable;
+      if (isTyping) return;
+
+      const key = event.key.toLowerCase();
+      if (key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undo();
+        return;
+      }
+
+      if (key === "y" || (key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        redo();
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [redo, undo]);
 
   const [isEditingName, setIsEditingName] = useState(false);
   const [tempName, setTempName] = useState("");
@@ -400,16 +431,16 @@ export function TopBar() {
             <div className="flex items-center gap-1.5">
               <button
                 onClick={undo}
-                disabled={!canUndo()}
-                title="Undo (Cmd+Z)"
+                disabled={!canUndoNow}
+                title="Undo (Ctrl+Z)"
                 className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/10 text-white hover:bg-white/20 disabled:opacity-30 transition-all border border-white/20"
               >
                 <Undo2 className="w-4 h-4" />
               </button>
               <button
                 onClick={redo}
-                disabled={!canRedo()}
-                title="Redo (Cmd+Shift+Z)"
+                disabled={!canRedoNow}
+                title="Redo (Ctrl+Y)"
                 className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/10 text-white hover:bg-white/20 disabled:opacity-30 transition-all border border-white/20"
               >
                 <Redo2 className="w-4 h-4" />

@@ -34,9 +34,7 @@ import {
 import { toast } from "sonner";
 import {
   buildVideoComposition,
-  type SceneTransitionType,
 } from "@/lib/video-composition";
-import { SCENE_TRANSITION_OPTIONS } from "@/lib/video-transitions";
 import {
   buildTimelineRows,
   EFFECT_RANGE_LAYER_ID,
@@ -199,7 +197,6 @@ export function Timeline() {
     mergeLayer,
     updateLayer,
     reorderVideoScene,
-    setVideoSceneTransition,
     selectLayer,
     deleteLayer,
     addLayer,
@@ -233,7 +230,7 @@ export function Timeline() {
     originalMediaStart: number;
     originalRowHeight?: number;
     segmentKind?: TimelineSegment["kind"];
-    transitionSide?: "before" | "after";
+    transitionSide?: "before" | "after" | "junction";
     transitionType?: string;
     lastY?: number;
   } | null>(null);
@@ -412,12 +409,6 @@ export function Timeline() {
     if (drag.segmentKind === "transition" && drag.transitionSide) {
       const layer = currentLayers.find((item) => item.id === drag.layerId);
       if (!layer) return;
-      const existing =
-        drag.transitionSide === "before"
-          ? layer.data?.transitionBefore
-          : layer.data?.transitionAfter;
-      const transitionType = existing?.type || drag.transitionType || "dissolve";
-      if (transitionType === "none") return;
 
       const maxDuration = Math.max(
         0.1,
@@ -428,7 +419,23 @@ export function Timeline() {
           ? drag.originalDuration + deltaTime
           : drag.originalDuration - deltaTime;
       newDuration = Math.max(0.1, Math.min(maxDuration, newDuration));
-      store.setVideoSceneTransition(drag.layerId, drag.transitionSide, {
+
+      if (drag.transitionSide === "before") {
+        const existing = layer.data?.transitionBefore;
+        const transitionType =
+          existing?.type || drag.transitionType || "dissolve";
+        if (transitionType === "none") return;
+        store.setVideoSceneTransition(drag.layerId, "before", {
+          type: transitionType,
+          duration: newDuration,
+        });
+        return;
+      }
+
+      const existing = layer.data?.transitionAfter;
+      const transitionType = existing?.type || drag.transitionType || "dissolve";
+      if (transitionType === "none") return;
+      store.setJunctionTransition(drag.layerId, {
         type: transitionType,
         duration: newDuration,
       });
@@ -863,16 +870,6 @@ export function Timeline() {
     );
   };
 
-  const setSelectedTransition = (
-    side: "before" | "after",
-    type: SceneTransitionType,
-  ) => {
-    if (!selectedLayer || selectedLayer.type !== "video") return;
-    setVideoSceneTransition(selectedLayer.id, side, {
-      type,
-      duration: type === "none" ? 0 : 0.5,
-    });
-  };
 
   return (
     <div
@@ -966,48 +963,6 @@ export function Timeline() {
         </div>
 
         <div className="flex items-center gap-2">
-          {selectedLayer?.type === "video" && (
-            <>
-              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-500">
-                Before
-                <select
-                  value={selectedLayer.data?.transitionBefore?.type || "none"}
-                  onChange={(event) =>
-                    setSelectedTransition(
-                      "before",
-                      event.target.value as SceneTransitionType,
-                    )
-                  }
-                  className="h-7 rounded-md border border-gray-200 bg-white px-2 text-[10px] normal-case text-gray-700"
-                >
-                  {SCENE_TRANSITION_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="flex items-center gap-1 text-[10px] font-bold uppercase text-gray-500">
-                After
-                <select
-                  value={selectedLayer.data?.transitionAfter?.type || "none"}
-                  onChange={(event) =>
-                    setSelectedTransition(
-                      "after",
-                      event.target.value as SceneTransitionType,
-                    )
-                  }
-                  className="h-7 rounded-md border border-gray-200 bg-white px-2 text-[10px] normal-case text-gray-700"
-                >
-                  {SCENE_TRANSITION_OPTIONS.map((option) => (
-                    <option key={option.value} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            </>
-          )}
           <ZoomOut className="w-4 h-4 text-gray-400" />
           <Slider
             className="w-24"

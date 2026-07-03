@@ -1,5 +1,5 @@
 import * as fabric from "fabric";
-import { useEditorStore } from "./store";
+import { useEditorStore, type Layer } from "./store";
 import { toast } from "sonner";
 import { resolveVideoPlaybackUrl } from "./video-playback-url";
 import {
@@ -594,6 +594,9 @@ export const addMediaFromUrl = async (
           ? "Video added to canvas!"
           : "Video appended to the timeline!",
       );
+      requestAnimationFrame(() => {
+        useEditorStore.getState().saveActiveCanvasToHistory();
+      });
     }
     return objectId;
   } else {
@@ -789,9 +792,9 @@ export const addMediaFromUrl = async (
           startTime: imageStartTime,
           duration: imageDuration,
         });
-        useEditorStore
-          .getState()
-          .saveToHistory(JSON.stringify(liveCanvas.toJSON()));
+        requestAnimationFrame(() => {
+          useEditorStore.getState().saveActiveCanvasToHistory();
+        });
         fabricImg.set({ visible: true, opacity: 1 });
         liveCanvas.setActiveObject(fabricImg);
         syncFabricLayerStack(
@@ -872,4 +875,150 @@ export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric
   }
   attachMediaOverlay(fabricCanvas, textBox as any);
   return textBox;
+};
+
+const loadVideoElementForHistory = (video: HTMLVideoElement, url: string) =>
+  new Promise<void>((resolve, reject) => {
+    const resolved = resolveVideoPlaybackUrl(url);
+    video.preload = "auto";
+    video.playsInline = true;
+    video.muted = true;
+    video.src = resolved;
+    video.load();
+
+    const finish = () => {
+      cleanup();
+      resolve();
+    };
+    const fail = () => {
+      cleanup();
+      reject(new Error("Could not reload video for history restore"));
+    };
+    const cleanup = () => {
+      video.removeEventListener("loadedmetadata", finish);
+      video.removeEventListener("error", fail);
+    };
+
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      resolve();
+      return;
+    }
+
+    video.addEventListener("loadedmetadata", finish, { once: true });
+    video.addEventListener("error", fail, { once: true });
+  });
+
+export const rehydrateCanvasMediaAfterHistory = async (
+  canvas: fabric.Canvas,
+  layers: Layer[],
+) => {
+  const store = useEditorStore.getState();
+  const layerObjectIds = new Set(
+    layers
+      .map((layer) => layer.objectId)
+      .filter((objectId): objectId is string => Boolean(objectId)),
+  );
+
+  canvas.getObjects().forEach((candidate) => {
+    const name = (candidate as any).name as string | undefined;
+    if (
+      name &&
+      /^(img|vid|text|emoji|circle|square|star|heart|triangle|line|arrow|bolt)_/.test(
+        name,
+      ) &&
+      !layerObjectIds.has(name)
+    ) {
+      ;(candidate as any)._disposeVideo?.();
+      ;(candidate as any)._cleanupVideoOverlay?.();
+      canvas.remove(candidate);
+    }
+  });
+
+  for (const layer of layers) {
+    if (!layer.objectId) continue;
+
+    let object = canvas
+      .getObjects()
+      .find((candidate) => (candidate as any).name === layer.objectId);
+
+    if (!object) {
+      if (layer.type === "text") {
+        object = addTextToCanvas(
+          layer.data?.content || layer.name,
+          {
+            fontFamily: layer.data?.fontFamily || "Roboto",
+            fontWeight: layer.data?.fontWeight || "normal",
+            fill: layer.data?.fill || "#ffffff",
+            fontSize: layer.data?.fontSize || 40,
+          },
+          canvas,
+          layer.objectId,
+        );
+        applyPersistedLayerState(object, layer);
+        applyVideoOverlayControls(object);
+        attachMediaOverlay(canvas, object as any, layer);
+        (object as any)._syncMediaOverlay?.();
+        continue;
+      }
+
+      if (
+        layer.data?.url &&
+        ["image", "video", "sticker"].includes(layer.type)
+      ) {
+        await addMediaFromUrl(
+          layer.data.url,
+          store,
+          layer.type === "video" ? "video" : "image",
+          true,
+          layer.objectId,
+          layer.data?.name || layer.name,
+          canvas,
+        );
+        object = canvas
+          .getObjects()
+          .find((candidate) => (candidate as any).name === layer.objectId);
+      }
+    }
+
+    if (!object) continue;
+
+    if (layer.type === "video" && layer.data?.url) {
+      const videoObject = object as any;
+      if (!videoObject._videoEl || !videoObject._videoOverlayElement) {
+        const videoEl = document.createElement("video");
+        try {
+          await loadVideoElementForHistory(videoEl, layer.data.url);
+        } catch {
+          continue;
+        }
+
+        videoObject._videoEl = videoEl;
+        videoObject._videoOpacity = videoObject._videoOpacity ?? 1;
+        videoObject._videoOverlayVisible =
+          videoObject._videoOverlayVisible ?? true;
+        videoObject._disposeVideo = () => {
+          videoEl.pause();
+          videoEl.removeAttribute("src");
+          videoEl.load();
+        };
+        attachVideoOverlay(canvas, videoObject, videoEl);
+        setVideoOverlayVisibility(videoObject, true);
+      }
+
+      applyPersistedLayerState(object, layer);
+      applyVideoResizeControls(videoObject);
+      continue;
+    }
+
+    if (["image", "text", "sticker"].includes(layer.type)) {
+      applyPersistedLayerState(object, layer);
+      applyVideoOverlayControls(object);
+      attachMediaOverlay(canvas, object as any, layer);
+      (object as any)._syncMediaOverlay?.();
+    }
+  }
+
+  syncFabricLayerStack(canvas, layers);
+  syncVideoOverlays(canvas);
+  canvas.requestRenderAll();
 };

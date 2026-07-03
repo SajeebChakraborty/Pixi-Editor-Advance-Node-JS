@@ -8,8 +8,9 @@ import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { useEditorStore } from "@/lib/store";
 import { DEFAULT_VIDEO_FILTERS } from "@/lib/video-filters";
+import { buildVideoComposition } from "@/lib/video-composition";
+import { TransitionPicker } from "@/components/editor/transition-picker";
 import type { SceneTransitionType } from "@/lib/video-composition";
-import { SCENE_TRANSITION_OPTIONS } from "@/lib/video-transitions";
 import {
   buildVideoFiltersFromPreset,
   IMAGE_PRESETS,
@@ -46,6 +47,9 @@ export function VideoPlayerProperties() {
     (state) => state.canvas.selectedLayerId,
   );
   const videoFabricCanvas = useEditorStore((state) => state.videoFabricCanvas);
+  const setJunctionTransition = useEditorStore(
+    (state) => state.setJunctionTransition,
+  );
   const setVideoSceneTransition = useEditorStore(
     (state) => state.setVideoSceneTransition,
   );
@@ -60,6 +64,28 @@ export function VideoPlayerProperties() {
       : null;
   const selectedVideoLayer =
     selectedLayer?.type === "video" ? selectedLayer : undefined;
+  const videoComposition = buildVideoComposition(layers);
+  const selectedSceneIndex = selectedVideoLayer
+    ? videoComposition.scenes.findIndex(
+        (scene) => scene.layer.id === selectedVideoLayer.id,
+      )
+    : -1;
+  const nextVideoScene =
+    selectedSceneIndex >= 0
+      ? videoComposition.scenes[selectedSceneIndex + 1]
+      : undefined;
+  const isFirstVideoScene = selectedSceneIndex === 0;
+  const isLastVideoScene = selectedSceneIndex >= 0 && !nextVideoScene;
+  const startTransition =
+    selectedVideoLayer?.data?.transitionBefore?.type || "none";
+  const startDuration = Number(
+    selectedVideoLayer?.data?.transitionBefore?.duration || 0,
+  );
+  const endTransition =
+    selectedVideoLayer?.data?.transitionAfter?.type || "none";
+  const endDuration = Number(
+    selectedVideoLayer?.data?.transitionAfter?.duration || 0,
+  );
   const selectedClipStart = Number(selectedLayer?.startTime || 0);
   const selectedClipDuration = Math.max(
     0.1,
@@ -79,16 +105,82 @@ export function VideoPlayerProperties() {
     selectedSourceDuration,
     selectedMediaStart + selectedClipDuration,
   );
+  const selectedScene =
+    selectedSceneIndex >= 0
+      ? videoComposition.scenes[selectedSceneIndex]
+      : undefined;
+  const maxStartDuration = Math.max(
+    0.1,
+    (selectedScene?.duration || selectedClipDuration) / 2,
+  );
+  const maxEndDuration = nextVideoScene
+    ? Math.max(
+        0.1,
+        Math.min(
+          (selectedScene?.duration || selectedClipDuration) / 2,
+          nextVideoScene.duration / 2,
+        ),
+      )
+    : maxStartDuration;
   const hasTimelineLayer =
     Boolean(selectedLayer) &&
     selectedLayer?.startTime !== undefined &&
     selectedLayer?.duration !== undefined;
 
-  const setTransition = (side: "before" | "after", type: SceneTransitionType) => {
+  const setStartType = (type: SceneTransitionType) => {
     if (!selectedVideoLayer) return;
-    setVideoSceneTransition(selectedVideoLayer.id, side, {
+    setVideoSceneTransition(selectedVideoLayer.id, "before", {
       type,
-      duration: type === "none" ? 0 : 0.5,
+      duration: type === "none" ? 0 : startDuration > 0 ? startDuration : 0.5,
+    });
+  };
+
+  const setStartDuration = (duration: number) => {
+    if (!selectedVideoLayer) return;
+    const type = (selectedVideoLayer.data?.transitionBefore?.type ||
+      "dissolve") as SceneTransitionType;
+    if (type === "none") return;
+    setVideoSceneTransition(selectedVideoLayer.id, "before", {
+      type,
+      duration: Math.max(0.1, duration),
+    });
+  };
+
+  const setJunctionType = (type: SceneTransitionType) => {
+    if (!selectedVideoLayer || !nextVideoScene) return;
+    setJunctionTransition(selectedVideoLayer.id, {
+      type,
+      duration: type === "none" ? 0 : endDuration > 0 ? endDuration : 0.5,
+    });
+  };
+
+  const setJunctionDuration = (duration: number) => {
+    if (!selectedVideoLayer || !nextVideoScene) return;
+    const type = (selectedVideoLayer.data?.transitionAfter?.type ||
+      "dissolve") as SceneTransitionType;
+    if (type === "none") return;
+    setJunctionTransition(selectedVideoLayer.id, {
+      type,
+      duration: Math.max(0.1, duration),
+    });
+  };
+
+  const setEndType = (type: SceneTransitionType) => {
+    if (!selectedVideoLayer || !isLastVideoScene) return;
+    setJunctionTransition(selectedVideoLayer.id, {
+      type,
+      duration: type === "none" ? 0 : endDuration > 0 ? endDuration : 0.5,
+    });
+  };
+
+  const setEndDuration = (duration: number) => {
+    if (!selectedVideoLayer || !isLastVideoScene) return;
+    const type = (selectedVideoLayer.data?.transitionAfter?.type ||
+      "dissolve") as SceneTransitionType;
+    if (type === "none") return;
+    setJunctionTransition(selectedVideoLayer.id, {
+      type,
+      duration: Math.max(0.1, duration),
     });
   };
 
@@ -356,33 +448,121 @@ export function VideoPlayerProperties() {
 
       <section className="space-y-4 px-4">
         <h3 className="border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
-          Layer Transitions
+          Clip Transitions
         </h3>
-        {selectedVideoLayer ? (
-          <div className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
-            <p className="text-[10px] font-bold text-white/70">
-              Clip: {selectedVideoLayer.name}
-            </p>
-            <TransitionSelect
-              label="Transition In (before clip)"
-              value={selectedVideoLayer.data?.transitionBefore?.type || "none"}
-              onChange={(type) => setTransition("before", type)}
-            />
-            <TransitionSelect
-              label="Transition Out (after clip)"
-              value={selectedVideoLayer.data?.transitionAfter?.type || "none"}
-              onChange={(type) => setTransition("after", type)}
-            />
+        {!selectedVideoLayer ? (
+          <p className="rounded-xl border border-dashed border-white/10 bg-[#18181b]/30 px-4 py-6 text-center text-[10px] leading-relaxed text-white/40">
+            Select a video clip, or click a transition block on the timeline.
+          </p>
+        ) : (
+          <div className="space-y-4">
+            <div className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
+              <p className="text-[10px] font-bold text-white/70">
+                Start of{" "}
+                <span className="text-violet-300">
+                  {selectedVideoLayer.name}
+                </span>
+                {!isFirstVideoScene && (
+                  <span className="ml-1 font-normal text-white/35">
+                    (also set on previous clip&apos;s end transition)
+                  </span>
+                )}
+              </p>
+              <TransitionPicker
+                value={(startTransition as SceneTransitionType) || "none"}
+                onChange={setStartType}
+              />
+              {startTransition !== "none" && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-[10px] font-bold uppercase text-white/50">
+                    <span>Duration</span>
+                    <span className="font-mono text-violet-300">
+                      {startDuration.toFixed(1)}s
+                    </span>
+                  </div>
+                  <Slider
+                    value={[startDuration]}
+                    min={0.1}
+                    max={maxStartDuration}
+                    step={0.1}
+                    onValueChange={(value) => setStartDuration(value[0])}
+                  />
+                </div>
+              )}
+            </div>
+
+            {nextVideoScene ? (
+              <div className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
+                <p className="text-[10px] font-bold text-white/70">
+                  End of{" "}
+                  <span className="text-violet-300">
+                    {selectedVideoLayer.name}
+                  </span>{" "}
+                  →{" "}
+                  <span className="text-violet-300">
+                    {nextVideoScene.layer.name}
+                  </span>
+                </p>
+                <TransitionPicker
+                  value={(endTransition as SceneTransitionType) || "none"}
+                  onChange={setJunctionType}
+                />
+                {endTransition !== "none" && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-[10px] font-bold uppercase text-white/50">
+                      <span>Duration</span>
+                      <span className="font-mono text-violet-300">
+                        {endDuration.toFixed(1)}s
+                      </span>
+                    </div>
+                    <Slider
+                      value={[endDuration]}
+                      min={0.1}
+                      max={maxEndDuration}
+                      step={0.1}
+                      onValueChange={(value) => setJunctionDuration(value[0])}
+                    />
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
+                <p className="text-[10px] font-bold text-white/70">
+                  End of{" "}
+                  <span className="text-violet-300">
+                    {selectedVideoLayer.name}
+                  </span>
+                </p>
+                <TransitionPicker
+                  value={(endTransition as SceneTransitionType) || "none"}
+                  onChange={setEndType}
+                />
+                {endTransition !== "none" && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between text-[10px] font-bold uppercase text-white/50">
+                      <span>Duration</span>
+                      <span className="font-mono text-violet-300">
+                        {endDuration.toFixed(1)}s
+                      </span>
+                    </div>
+                    <Slider
+                      value={[endDuration]}
+                      min={0.1}
+                      max={maxEndDuration}
+                      step={0.1}
+                      onValueChange={(value) => setEndDuration(value[0])}
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+
             <p className="text-[9px] leading-relaxed text-white/35">
-              Assigned transitions appear on the Transitions track in the
-              timeline. Click a transition block there to edit the linked clip.
+              Hover a preview to see how each transition looks, then click to
+              apply. Start and end transitions work on any clip; between-clips
+              transitions appear when another video follows.
             </p>
           </div>
-        ) : (
-          <p className="rounded-xl border border-dashed border-white/10 bg-[#18181b]/30 px-4 py-6 text-center text-[10px] leading-relaxed text-white/40">
-            Select a video clip or a transition block on the timeline to set
-            per-layer transitions.
-          </p>
         )}
       </section>
 
@@ -516,37 +696,6 @@ export function VideoPlayerProperties() {
         </div>
       </section>
     </div>
-  );
-}
-
-function TransitionSelect({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: SceneTransitionType;
-  onChange: (type: SceneTransitionType) => void;
-}) {
-  return (
-    <label className="block space-y-2">
-      <span className="text-[10px] font-bold uppercase text-white/60">
-        {label}
-      </span>
-      <select
-        value={value}
-        onChange={(event) =>
-          onChange(event.target.value as SceneTransitionType)
-        }
-        className="h-9 w-full rounded-lg border border-white/10 bg-[#111] px-3 text-[11px] font-medium text-white outline-none focus:border-[#8b5cf6]"
-      >
-        {SCENE_TRANSITION_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
   );
 }
 
