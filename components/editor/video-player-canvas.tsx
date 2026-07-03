@@ -51,6 +51,7 @@ import { detachMediaOverlays, syncMediaOverlays, attachMediaOverlay, isMediaOver
 import {
   applyFabricTransformControls,
   applyVideoOverlayControls,
+  applyVideoResizeControls,
   installFabricTransformControlDefaults,
 } from "@/lib/fabric-transform-controls";
 
@@ -277,6 +278,7 @@ export function VideoPlayerCanvas() {
     canvas.on("object:scaling", (event) => {
       const target = event.target as any;
       if (target?._videoEl) {
+        target._userTransform = true;
         syncActiveVideoOverlay(event.target);
       } else {
         target?._syncMediaOverlay?.();
@@ -285,6 +287,7 @@ export function VideoPlayerCanvas() {
     canvas.on("object:moving", (event) => {
       const target = event.target as any;
       if (target?._videoEl) {
+        target._userTransform = true;
         syncActiveVideoOverlay(event.target);
       } else {
         target?._syncMediaOverlay?.();
@@ -296,6 +299,7 @@ export function VideoPlayerCanvas() {
         if (target._videoEl) {
           target._userTransform = true;
           syncActiveVideoOverlay(event.target);
+          persistOverlayObjectState(event.target);
         } else {
           target._syncMediaOverlay?.();
           if (isMediaOverlayObject(event.target)) {
@@ -640,7 +644,7 @@ export function VideoPlayerCanvas() {
           currentTime < layerEnd;
 
         attachVideoOverlay(canvas, object, videoEl);
-        applyFabricTransformControls(object);
+        applyVideoResizeControls(object);
         object.set({
           selectable: layer.locked ? false : true,
           evented: layer.locked ? false : true,
@@ -650,6 +654,7 @@ export function VideoPlayerCanvas() {
           lockScalingY: Boolean(layer.locked),
           hasControls: !layer.locked,
           hasBorders: !layer.locked,
+          uniformScaling: false,
         });
         object.visible = shouldShow;
 

@@ -35,10 +35,9 @@ export function applyFabricTransformControls(object: fabric.FabricObject) {
 }
 
 /** Drag/resize overlays on the video canvas (HTML preview + invisible fabric target). */
-export function applyVideoOverlayControls(object: fabric.FabricObject) {
+export function applyVideoResizeControls(object: fabric.FabricObject) {
   applyFabricTransformControls(object);
 
-  const isText = isTextFabricObject(object);
   object.set({
     selectable: true,
     evented: true,
@@ -46,14 +45,35 @@ export function applyVideoOverlayControls(object: fabric.FabricObject) {
     lockMovementY: false,
     lockScalingX: false,
     lockScalingY: false,
-    lockRotation: false,
+    lockRotation: true,
+    uniformScaling: false,
+    centeredScaling: true,
     hasControls: true,
     hasBorders: true,
     perPixelTargetFind: false,
     hoverCursor: "move",
     moveCursor: "move",
-    padding: isText ? 12 : 0,
-    ...(isText ? { editable: false } : {}),
+  });
+
+  const controls = object.controls;
+  if (controls) {
+    (["tl", "tr", "bl", "br", "ml", "mr", "mt", "mb"] as const).forEach(
+      (key) => {
+        if (controls[key]) controls[key].visible = true;
+      },
+    );
+    if (controls.mtr) controls.mtr.visible = false;
+  }
+}
+
+/** Drag/resize overlays on the video canvas (HTML preview + invisible fabric target). */
+export function applyVideoOverlayControls(object: fabric.FabricObject) {
+  applyVideoResizeControls(object);
+
+  const isText = isTextFabricObject(object);
+  object.set({
+    padding: isText ? 12 : 4,
+    ...(isText ? { editable: false, lockRotation: false } : {}),
   });
 
   if (!isText) return;

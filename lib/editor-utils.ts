@@ -12,7 +12,7 @@ import {
   syncVideoOverlays,
   syncVideoOverlay,
 } from "./video-overlay";
-import { applyFabricTransformControls, applyVideoOverlayControls } from "./fabric-transform-controls";
+import { applyFabricTransformControls, applyVideoOverlayControls, applyVideoResizeControls } from "./fabric-transform-controls";
 import { buildVideoComposition } from "./video-composition";
 import {
   applyBorder,
@@ -155,6 +155,11 @@ export const applyPersistedLayerState = (
       });
     } else {
       object.set(persisted as any);
+    }
+
+    if (layer.type === "video" && (object as any)._videoEl) {
+      (object as any)._userTransform = true;
+      object.setCoords();
     }
   } else if (isVideoOverlayImage && object.canvas) {
     centerObjectOnProjectCanvas(object, object.canvas);
@@ -494,7 +499,7 @@ export const addMediaFromUrl = async (
       vWidth,
       vHeight,
     );
-    applyFabricTransformControls(fabricVideo);
+    applyVideoResizeControls(fabricVideo);
     delete (fabricVideo as any)._userTransform;
     fabricVideo.set({ opacity: 0 });
     (fabricVideo as any)._videoEl = videoEl;
