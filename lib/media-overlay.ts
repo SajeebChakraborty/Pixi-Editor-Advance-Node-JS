@@ -102,9 +102,10 @@ function ensureMediaOverlayElement(
     let element = object._mediaOverlayElement as HTMLDivElement | undefined;
     if (!(element instanceof HTMLDivElement)) {
       element = document.createElement("div");
-      element.style.whiteSpace = "pre-wrap";
-      element.style.wordBreak = "break-word";
+      element.style.whiteSpace = "nowrap";
+      element.style.wordBreak = "normal";
       element.style.userSelect = "none";
+      element.style.overflow = "visible";
       object._mediaOverlayElement = element;
     }
 
@@ -115,10 +116,13 @@ function ensureMediaOverlayElement(
     element.style.fontWeight = String(
       textObject.fontWeight || layer?.data?.fontWeight || "normal",
     );
-    element.style.fontSize = `${Number(textObject.fontSize || layer?.data?.fontSize || 40)}px`;
+    const scaledFontSize =
+      Number(textObject.fontSize || layer?.data?.fontSize || 40) *
+      Number(textObject.scaleX || 1);
+    element.style.fontSize = `${scaledFontSize}px`;
     element.style.color = String(textObject.fill || layer?.data?.fill || "#ffffff");
-    element.style.textAlign = String(textObject.textAlign || "left");
-    element.style.lineHeight = String(textObject.lineHeight || 1.16);
+    element.style.textAlign = String(textObject.textAlign || "center");
+    element.style.lineHeight = "1";
     return element;
   }
 
@@ -143,23 +147,49 @@ export function syncMediaOverlay(
 
   const rect = getObjectOverlayRect(object, canvas);
   const visible = object.visible !== false && layer?.visible !== false;
+  const isText = isTextObject(object);
 
-  Object.assign(element.style, {
-    position: "absolute",
-    left: `${rect.left}px`,
-    top: `${rect.top}px`,
-    width: `${rect.width}px`,
-    height: `${rect.height}px`,
-    maxWidth: "none",
-    maxHeight: "none",
-    objectFit: "fill",
-    pointerEvents: "none",
-    transform: object.angle ? `rotate(${object.angle}deg)` : "none",
-    transformOrigin: "center center",
-    opacity: visible ? "1" : "0",
-    display: visible ? "block" : "none",
-    zIndex: `${Math.max(1, stackIndex)}`,
-  });
+  if (isText) {
+    const centerX = rect.left + rect.width / 2;
+    const centerY = rect.top + rect.height / 2;
+    const rotation = object.angle ? ` rotate(${object.angle}deg)` : "";
+
+    Object.assign(element.style, {
+      position: "absolute",
+      left: `${centerX}px`,
+      top: `${centerY}px`,
+      width: "max-content",
+      height: "auto",
+      maxWidth: "none",
+      maxHeight: "none",
+      whiteSpace: "nowrap",
+      wordBreak: "normal",
+      overflow: "visible",
+      display: visible ? "inline-block" : "none",
+      pointerEvents: "none",
+      transform: `translate(-50%, -50%)${rotation}`,
+      transformOrigin: "center center",
+      opacity: visible ? "1" : "0",
+      zIndex: `${Math.max(1, stackIndex)}`,
+    });
+  } else {
+    Object.assign(element.style, {
+      position: "absolute",
+      left: `${rect.left}px`,
+      top: `${rect.top}px`,
+      width: `${rect.width}px`,
+      height: `${rect.height}px`,
+      maxWidth: "none",
+      maxHeight: "none",
+      objectFit: "fill",
+      pointerEvents: "none",
+      transform: object.angle ? `rotate(${object.angle}deg)` : "none",
+      transformOrigin: "center center",
+      opacity: visible ? "1" : "0",
+      display: visible ? "block" : "none",
+      zIndex: `${Math.max(1, stackIndex)}`,
+    });
+  }
 
   object.set({
     opacity: 0,
@@ -195,14 +225,40 @@ export function attachMediaOverlay(
 
   const events = ["moving", "scaling", "rotating", "skewing", "modified"];
   events.forEach((eventName) => object.on(eventName as any, sync));
+
+  const handleTextChanged = () => {
+    if (!isTextObject(object)) return;
+    const textObject = object as IText;
+    const currentLayer =
+      layer ||
+      useEditorStore
+        .getState()
+        .getLayers()
+        .find((candidate) => candidate.objectId === object.name);
+    if (currentLayer) {
+      useEditorStore.getState().updateLayerData(currentLayer.id, {
+        content: String(textObject.text || ""),
+        fill: String(textObject.fill || currentLayer.data?.fill || "#ffffff"),
+        fontFamily: String(
+          textObject.fontFamily || currentLayer.data?.fontFamily || "Roboto",
+        ),
+        fontWeight: String(
+          textObject.fontWeight || currentLayer.data?.fontWeight || "normal",
+        ),
+        fontSize: Number(textObject.fontSize || currentLayer.data?.fontSize || 40),
+      });
+    }
+    sync();
+  };
+
   if (isTextObject(object)) {
-    object.on("changed" as any, sync);
+    object.on("changed" as any, handleTextChanged);
   }
 
   const cleanup = () => {
     events.forEach((eventName) => object.off(eventName as any, sync));
     if (isTextObject(object)) {
-      object.off("changed" as any, sync);
+      object.off("changed" as any, handleTextChanged);
     }
     object._mediaOverlayElement?.remove();
     object._mediaOverlayElement = undefined;

@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import { Input } from "@/components/ui/input";
 import { Slider } from "@/components/ui/slider";
 import { Button } from "@/components/ui/button";
+import { applyTextObjectUpdates } from "@/lib/editor-utils";
 import {
   Type,
   ChevronDown,
@@ -35,6 +36,7 @@ interface TextPropertiesProps {
 }
 
 export function TextProperties({ selectedObject }: TextPropertiesProps) {
+  const [content, setContent] = useState(String(selectedObject.text || ""));
   const [fontSize, setFontSize] = useState(selectedObject.fontSize as number);
   const [fontFamily, setFontFamily] = useState(
     (selectedObject.fontFamily as string) || "Roboto",
@@ -55,6 +57,7 @@ export function TextProperties({ selectedObject }: TextPropertiesProps) {
   /* Listener for updates */
   useEffect(() => {
     const updateLocalState = () => {
+      setContent(String(selectedObject.text || ""));
       setX(Math.round(selectedObject.left || 0));
       setY(Math.round(selectedObject.top || 0));
       setRotation(Math.round(selectedObject.angle || 0));
@@ -104,12 +107,62 @@ export function TextProperties({ selectedObject }: TextPropertiesProps) {
   };
 
   const applyChanges = (updates: Record<string, any>) => {
-    selectedObject.set(updates);
-    selectedObject.canvas?.renderAll();
+    applyTextObjectUpdates(selectedObject, updates);
+    if (typeof updates.text === "string") {
+      setContent(updates.text);
+    }
   };
 
   return (
     <div className="space-y-8">
+      <div className="space-y-3">
+        <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest pl-1">
+          Text Content
+        </h3>
+        <Input
+          value={content}
+          onChange={(event) => {
+            const next = event.target.value.replace(/\n/g, " ");
+            setContent(next);
+            applyChanges({ text: next });
+          }}
+          placeholder="Type your text..."
+          className="h-11 bg-[#222] border-transparent text-white text-sm focus:border-[#8b5cf6]"
+        />
+      </div>
+
+      <div className="space-y-3">
+        <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest pl-1">
+          Font Size
+        </h3>
+        <div className="flex items-center gap-3 px-1">
+          <Slider
+            value={[fontSize]}
+            min={12}
+            max={160}
+            step={1}
+            onValueChange={(value) => {
+              const next = value[0];
+              setFontSize(next);
+              applyChanges({ fontSize: next });
+            }}
+            className="flex-1"
+          />
+          <Input
+            type="number"
+            min={12}
+            max={200}
+            value={fontSize}
+            onChange={(event) => {
+              const val = Math.max(12, parseInt(event.target.value, 10) || 12);
+              setFontSize(val);
+              applyChanges({ fontSize: val });
+            }}
+            className="h-10 w-16 bg-[#222] border-transparent text-white text-xs font-mono font-bold text-center focus:border-[#8b5cf6]"
+          />
+        </div>
+      </div>
+
       {/* Position & Rotation */}
       <div className="space-y-3">
         <h3 className="text-[10px] font-bold text-gray-500 uppercase tracking-widest pl-1">

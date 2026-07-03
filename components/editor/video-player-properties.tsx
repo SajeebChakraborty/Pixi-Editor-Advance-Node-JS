@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { ChevronDown, ImageIcon, SlidersHorizontal, Trash2, Type, Volume2, VolumeX } from "lucide-react";
 import { CanvasProperties } from "@/components/editor/properties/canvas-properties";
+import { TextProperties } from "@/components/editor/properties/text-properties";
 import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { useEditorStore } from "@/lib/store";
@@ -44,12 +45,19 @@ export function VideoPlayerProperties() {
   const selectedLayerId = useEditorStore(
     (state) => state.canvas.selectedLayerId,
   );
+  const videoFabricCanvas = useEditorStore((state) => state.videoFabricCanvas);
   const setVideoSceneTransition = useEditorStore(
     (state) => state.setVideoSceneTransition,
   );
   const layers =
     pages.find((page) => page.id === activePageId)?.layers || [];
   const selectedLayer = layers.find((layer) => layer.id === selectedLayerId);
+  const selectedTextObject =
+    selectedLayer?.type === "text" && selectedLayer.objectId
+      ? (videoFabricCanvas
+          ?.getObjects()
+          .find((object: any) => object.name === selectedLayer.objectId) as any)
+      : null;
   const selectedVideoLayer =
     selectedLayer?.type === "video" ? selectedLayer : undefined;
   const selectedClipStart = Number(selectedLayer?.startTime || 0);
@@ -125,6 +133,15 @@ export function VideoPlayerProperties() {
   return (
     <div className="flex flex-col gap-8 bg-black text-white">
       <CanvasProperties />
+
+      {selectedLayer?.type === "text" && selectedTextObject && (
+        <section className="space-y-4 px-4">
+          <h3 className="border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">
+            Text Layer
+          </h3>
+          <TextProperties selectedObject={selectedTextObject} />
+        </section>
+      )}
 
       <section className="space-y-4 px-4">
         <h3 className="border-b border-white/10 pb-2 text-[11px] font-bold uppercase tracking-widest text-gray-500">

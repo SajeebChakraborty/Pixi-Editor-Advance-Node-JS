@@ -127,6 +127,8 @@ export function TextTool() {
       fontSize,
       originX: "center",
       originY: "center",
+      editable: true,
+      splitByGrapheme: false,
       ...options,
     });
 

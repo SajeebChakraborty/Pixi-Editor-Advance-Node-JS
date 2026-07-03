@@ -69,6 +69,51 @@ export const persistOverlayObjectState = (object: fabric.FabricObject) => {
   });
 };
 
+export const applyTextObjectUpdates = (
+  object: fabric.IText,
+  updates: Record<string, unknown>,
+) => {
+  const nextUpdates = { ...updates };
+  if ("fontSize" in nextUpdates) {
+    nextUpdates.scaleX = 1;
+    nextUpdates.scaleY = 1;
+  }
+
+  object.set(nextUpdates as any);
+  if (
+    "text" in nextUpdates ||
+    "fontSize" in nextUpdates ||
+    "fontFamily" in nextUpdates
+  ) {
+    (object as any).dirty = true;
+    (object as any).initDimensions?.();
+  }
+  object.setCoords();
+
+  const objectId = String((object as any).name || "");
+  const store = useEditorStore.getState();
+  const layer = store.getLayers().find((item) => item.objectId === objectId);
+
+  if (layer) {
+    const nextContent =
+      typeof updates.text === "string" ? updates.text : String(object.text || "");
+    store.updateLayerData(layer.id, {
+      content: nextContent,
+      fill: String(object.fill || layer.data?.fill || "#ffffff"),
+      fontFamily: String(object.fontFamily || layer.data?.fontFamily || "Roboto"),
+      fontWeight: String(object.fontWeight || layer.data?.fontWeight || "normal"),
+      fontSize: Number(object.fontSize || layer.data?.fontSize || 40),
+    });
+    if (typeof updates.text === "string" && updates.text.trim()) {
+      store.updateLayer(layer.id, { name: updates.text.trim().slice(0, 48) });
+    }
+  }
+
+  (object as any)._syncMediaOverlay?.();
+  object.canvas?.requestRenderAll();
+  persistOverlayObjectState(object);
+};
+
 fabric.FabricObject.customProperties = Array.from(
   new Set([
     ...(fabric.FabricObject.customProperties || []),
@@ -807,6 +852,7 @@ export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric
     fontSize,
     originX: "center",
     originY: "center",
+    splitByGrapheme: false,
     ...options,
     name: objectId,
   });

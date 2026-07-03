@@ -14,6 +14,11 @@ import {
   isLinkedAudioActive,
 } from "./linked-video-audio";
 import { buildVideoFilterCss, isEffectActiveAtTime } from "./video-filters";
+import {
+  beginOverlayExportPass,
+  drawOverlayExportPass,
+  endOverlayExportPass,
+} from "./video-export-overlays";
 
 export type VideoExportFormat = "mp4" | "webm";
 
@@ -307,9 +312,6 @@ export const exportVideo = async (
   };
 
   const previousVideoState = { ...store.videoState };
-  const lowerCanvas = (fabricCanvas as any).lowerCanvasEl as
-    | HTMLCanvasElement
-    | undefined;
   let animationFrameId = 0;
   let stopped = false;
 
@@ -481,8 +483,13 @@ export const exportVideo = async (
         compositionTime >= start &&
         compositionTime < end;
     });
-    fabricCanvas.requestRenderAll();
-    if (lowerCanvas) context.drawImage(lowerCanvas, 0, 0, width, height);
+
+    const overlayState = beginOverlayExportPass(fabricCanvas);
+    try {
+      drawOverlayExportPass(context, fabricCanvas, width, height);
+    } finally {
+      endOverlayExportPass(fabricCanvas, overlayState);
+    }
 
     store.setVideoState({ currentTime: compositionTime, isPlaying: false });
     if (elapsed >= exportDuration) {
