@@ -8,6 +8,7 @@ import { useState, useEffect } from "react";
 import Image from "next/image";
 import { AssetLibrary, Asset } from "@/lib/assets";
 import { AssetService } from "@/lib/asset-service";
+import { getActiveFabricCanvas } from "@/lib/editor-actions";
 import { FabricImage } from "fabric";
 import { toast } from "sonner";
 
@@ -50,7 +51,15 @@ export function AssetTool() {
     try {
       const store = useEditorStore.getState();
       const { addMediaFromUrl } = await import("@/lib/editor-utils");
-      await addMediaFromUrl(asset.url, store, asset.type as any);
+      await addMediaFromUrl(
+        asset.url,
+        store,
+        asset.type as any,
+        false,
+        undefined,
+        asset.name,
+        getActiveFabricCanvas(),
+      );
     } catch (err) {
       console.error("Failed to add asset", err);
       toast.error("Failed to add asset");

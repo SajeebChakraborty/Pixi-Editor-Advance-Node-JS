@@ -11,6 +11,7 @@ import {
   type VideoFilters,
 } from './video-filters'
 import type { ImagePresetId } from './editor-actions'
+import { syncFabricLayerStack } from './layer-stack'
 
 // Canvas presets
 export const CANVAS_PRESETS = {
@@ -744,6 +745,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           const obj = fabricCanvas.getObjects().find((o: any) => o.name === layer.objectId)
           if (obj && !objectStillUsed) {
             ;(obj as any)._disposeVideo?.()
+            ;(obj as any)._cleanupMediaOverlay?.()
             fabricCanvas.remove(obj)
             fabricCanvas.requestRenderAll()
           }
@@ -835,6 +837,15 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
       if (updates.startTime !== undefined || updates.duration !== undefined) {
         setTimeout(() => get().recalculateTotalDuration(), 0)
+      }
+
+      const nextPage = newPages.find((p) => p.id === state.canvas.activePageId)
+      if (updates.track !== undefined && nextPage) {
+        const fabricCanvas =
+          state.editorMode === 'video'
+            ? state.videoFabricCanvas || state.canvas.fabricCanvas
+            : state.canvas.fabricCanvas
+        syncFabricLayerStack(fabricCanvas, nextPage.layers)
       }
 
       return {
@@ -939,17 +950,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       }
 
       // Sync with fabric canvas stack
-      const { fabricCanvas } = state.canvas
+      const fabricCanvas =
+        state.editorMode === 'video'
+          ? state.videoFabricCanvas || state.canvas.fabricCanvas
+          : state.canvas.fabricCanvas
       if (fabricCanvas) {
-        const layer = newLayers.find((l) => l.id === layerId)
-        if (layer) {
-          const obj = fabricCanvas.getObjects().find((o) => (o as any).name === layer.objectId)
-          if (obj) {
-            if (direction === 'up') fabricCanvas.bringObjectForward(obj)
-            else fabricCanvas.sendObjectBackwards(obj)
-            fabricCanvas.renderAll()
-          }
-        }
+        syncFabricLayerStack(fabricCanvas, newLayers)
       }
 
       const newPages = state.canvas.pages.map((p) =>
@@ -983,18 +989,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       newLayers.splice(insertIndex, 0, movedLayer)
 
       // Sync with fabric canvas stack
-      const { fabricCanvas } = state.canvas
+      const fabricCanvas =
+        state.editorMode === 'video'
+          ? state.videoFabricCanvas || state.canvas.fabricCanvas
+          : state.canvas.fabricCanvas
       if (fabricCanvas) {
-        const obj = fabricCanvas.getObjects().find((o) => (o as any).name === movedLayer.objectId)
-        if (obj) {
-          const diff = insertIndex - fromIndex;
-          if (diff > 0) {
-            for (let i = 0; i < diff; i++) fabricCanvas.bringObjectForward(obj)
-          } else if (diff < 0) {
-            for (let i = 0; i < -diff; i++) fabricCanvas.sendObjectBackwards(obj)
-          }
-          fabricCanvas.renderAll()
-        }
+        syncFabricLayerStack(fabricCanvas, newLayers)
       }
 
       const newPages = state.canvas.pages.map((p) =>

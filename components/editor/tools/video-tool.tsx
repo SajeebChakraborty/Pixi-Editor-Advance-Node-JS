@@ -7,7 +7,7 @@ import { VideoEditorComplete } from "./video-editor-complete";
 import { Upload, Plus, Film, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
-import { addMediaFromUrl } from "@/lib/editor-utils";
+import { addMediaFromUrl, PHOTO_DRAG_MIME_TYPE } from "@/lib/editor-utils";
 import { AssetService } from "@/lib/asset-service";
 import { uploadEditorAsset } from "@/lib/editor-assets";
 import { getEditorProjectId } from "@/lib/project-persistence";
@@ -255,6 +255,18 @@ export function VideoTool() {
     setIsDragging(false);
   };
 
+  const startLibraryDrag = (
+    event: React.DragEvent<HTMLDivElement>,
+    item: { url: string; name: string; type?: string },
+  ) => {
+    if (item.type !== "image") return;
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData(
+      PHOTO_DRAG_MIME_TYPE,
+      JSON.stringify({ url: item.url, name: item.name }),
+    );
+  };
+
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
@@ -398,6 +410,8 @@ export function VideoTool() {
               {libraryVideos.map((video) => (
                 <div
                   key={video.id}
+                  draggable={video.type === "image"}
+                  onDragStart={(event) => startLibraryDrag(event, video)}
                   className="group relative aspect-video rounded-lg overflow-hidden bg-black/50 cursor-pointer ring-1 ring-white/5 hover:ring-[#8b5cf6] transition-all"
                   onClick={() => {
                     if (video.type === "image") {

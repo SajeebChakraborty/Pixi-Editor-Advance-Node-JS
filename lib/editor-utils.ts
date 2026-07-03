@@ -4,6 +4,7 @@ import { toast } from "sonner";
 import { resolveVideoPlaybackUrl } from "./video-playback-url";
 import {
   attachVideoOverlay,
+  centerObjectOnProjectCanvas,
   fitFabricCanvasToContainer,
   fitVideoObjectToCanvas,
   refitAllVideosToProjectCanvas,
@@ -23,8 +24,50 @@ import {
   DEFAULT_SHADOW,
 } from "./editor-actions";
 import { getPersistedLayerObjectState } from "./project-persistence";
+import { syncFabricLayerStack } from "./layer-stack";
+import { attachMediaOverlay } from "./media-overlay";
+import { getNextOverlayTrack } from "./timeline-tracks";
 
 export const PHOTO_DRAG_MIME_TYPE = "application/x-pixi-photo";
+
+export const resolveCanvasPlacementFromEvent = (
+  canvas: fabric.Canvas,
+  clientEvent: DragEvent | MouseEvent | PointerEvent,
+) => {
+  canvas.calcOffset();
+  const pointer = canvas.getPointer(clientEvent as any);
+  return {
+    left: Number(pointer.x || 0),
+    top: Number(pointer.y || 0),
+  };
+};
+
+export const persistOverlayObjectState = (object: fabric.FabricObject) => {
+  const objectId = String((object as any).name || "");
+  if (!objectId) return;
+
+  const store = useEditorStore.getState();
+  const layer = store.getLayers().find((item) => item.objectId === objectId);
+  if (!layer) return;
+
+  store.updateLayerData(layer.id, {
+    userPlaced: true,
+    fabric: {
+      left: object.left,
+      top: object.top,
+      width: object.width,
+      height: object.height,
+      scaleX: object.scaleX,
+      scaleY: object.scaleY,
+      angle: object.angle,
+      flipX: object.flipX,
+      flipY: object.flipY,
+      originX: object.originX,
+      originY: object.originY,
+      visible: object.visible,
+    },
+  });
+};
 
 fabric.FabricObject.customProperties = Array.from(
   new Set([
@@ -39,7 +82,38 @@ export const applyPersistedLayerState = (
   layer: any,
 ) => {
   const persisted = getPersistedLayerObjectState(layer);
-  if (persisted) object.set(persisted as any);
+  const isVideoOverlayImage =
+    useEditorStore.getState().editorMode === "video" &&
+    object instanceof fabric.FabricImage &&
+    layer.type !== "video";
+  const userPlaced = Boolean(layer.data?.userPlaced);
+
+  if (persisted) {
+    if (isVideoOverlayImage && !userPlaced) {
+      const { left: _left, top: _top, originX: _ox, originY: _oy, ...rest } =
+        persisted as Record<string, unknown>;
+      if (Object.keys(rest).length > 0) {
+        object.set(rest as any);
+      }
+      if (object.canvas) {
+        centerObjectOnProjectCanvas(object, object.canvas);
+      }
+    } else if (isVideoOverlayImage && persisted.originX !== "center") {
+      object.set(persisted as any);
+      object.setCoords();
+      const rect = object.getBoundingRect();
+      object.set({
+        originX: "center",
+        originY: "center",
+        left: rect.left + rect.width / 2,
+        top: rect.top + rect.height / 2,
+      });
+    } else {
+      object.set(persisted as any);
+    }
+  } else if (isVideoOverlayImage && object.canvas) {
+    centerObjectOnProjectCanvas(object, object.canvas);
+  }
 
   if (
     object instanceof fabric.FabricImage &&
@@ -84,13 +158,11 @@ export const addMediaFromUrl = async (
 
   const getLiveFabricCanvas = () => {
     const state = useEditorStore.getState();
-    const preferVideoCanvas =
-      isVideo && state.editorMode === "video" && state.videoFabricCanvas;
     const candidate =
-      (preferVideoCanvas ? state.videoFabricCanvas : null) ??
       targetFabricCanvas ??
-      state.videoFabricCanvas ??
-      state.canvas.fabricCanvas ??
+      (state.editorMode === "video"
+        ? state.videoFabricCanvas || state.canvas.fabricCanvas
+        : state.canvas.fabricCanvas || state.videoFabricCanvas) ??
       canvas?.fabricCanvas;
 
     if (
@@ -352,8 +424,6 @@ export const addMediaFromUrl = async (
     const transparentPixel = document.createElement("canvas");
     transparentPixel.width = 1;
     transparentPixel.height = 1;
-    const pixelContext = transparentPixel.getContext("2d");
-    pixelContext?.fillRect(0, 0, 1, 1);
 
     const fabricVideo = new fabric.FabricImage(transparentPixel, {
       name: objectId,
@@ -381,6 +451,7 @@ export const addMediaFromUrl = async (
     );
     applyFabricTransformControls(fabricVideo);
     delete (fabricVideo as any)._userTransform;
+    fabricVideo.set({ opacity: 0 });
     (fabricVideo as any)._videoEl = videoEl;
     (fabricVideo as any)._videoOpacity = 1;
     (fabricVideo as any)._videoOverlayVisible = true;
@@ -418,8 +489,10 @@ export const addMediaFromUrl = async (
     syncVideoOverlay(fabricVideo as any);
 
     targetCanvas.setActiveObject(fabricVideo);
-    targetCanvas.bringObjectToFront(fabricVideo);
-    targetCanvas.requestRenderAll();
+    syncFabricLayerStack(
+      targetCanvas,
+      useEditorStore.getState().getLayers(),
+    );
 
     if (!silent) {
       const videoDuration =
@@ -536,32 +609,67 @@ export const addMediaFromUrl = async (
             ) || 1
           : Math.min(targetWidth / imgWidth, targetHeight / imgHeight) || 1;
       const objectId = forceObjectId || `img_${Date.now()}`;
-      const renderedWidth = imgWidth * scale;
-      const renderedHeight = imgHeight * scale;
+      const isVideoMode = useEditorStore.getState().editorMode === "video";
+
+      const liveCanvas = fabricCanvas;
+      if (!liveCanvas) return null;
+
+      const projectDims = (liveCanvas as any).projectDimensions as
+        | { width: number; height: number }
+        | undefined;
+      const canvasWidth = Math.max(
+        1,
+        projectDims?.width || liveCanvas.getWidth() || targetWidth,
+      );
+      const canvasHeight = Math.max(
+        1,
+        projectDims?.height || liveCanvas.getHeight() || targetHeight,
+      );
+
+      if (
+        isVideoMode &&
+        liveCanvas.wrapperEl?.parentElement &&
+        !(liveCanvas as any).artboardExportBounds
+      ) {
+        const hostRect =
+          liveCanvas.wrapperEl.parentElement.getBoundingClientRect();
+        fitFabricCanvasToContainer(
+          liveCanvas,
+          hostRect.width,
+          hostRect.height,
+          canvasWidth,
+          canvasHeight,
+        );
+      }
+
       const imageLeft = placement
-        ? placement.left - renderedWidth / 2
-        : shouldAutoResizeCanvasToImage
-          ? 0
-          : (targetWidth - renderedWidth) / 2;
+        ? placement.left
+        : isVideoMode
+          ? canvasWidth / 2
+          : shouldAutoResizeCanvasToImage
+            ? imgWidth / 2
+            : canvasWidth / 2;
       const imageTop = placement
-        ? placement.top - renderedHeight / 2
-        : shouldAutoResizeCanvasToImage
-          ? 0
-          : (targetHeight - renderedHeight) / 2;
+        ? placement.top
+        : isVideoMode
+          ? canvasHeight / 2
+          : shouldAutoResizeCanvasToImage
+            ? imgHeight / 2
+            : canvasHeight / 2;
 
       const fabricImg = new fabric.FabricImage(loadedEl, {
         left: imageLeft,
         top: imageTop,
+        originX: "center",
+        originY: "center",
         scaleX: scale,
         scaleY: scale,
         name: objectId,
         visible: true,
         opacity: 1,
-        objectCaching: false
+        objectCaching: false,
       });
 
-      const liveCanvas =
-        targetFabricCanvas ?? useEditorStore.getState().canvas.fabricCanvas;
       if (!liveCanvas) return null;
 
       liveCanvas.add(fabricImg);
@@ -572,9 +680,23 @@ export const addMediaFromUrl = async (
         selectable: true,
       });
       fabricImg.setCoords();
+      if (useEditorStore.getState().editorMode === "video") {
+        applyFabricTransformControls(fabricImg);
+        fabricImg.set({
+          evented: true,
+          selectable: true,
+          lockMovementX: false,
+          lockMovementY: false,
+          hasControls: true,
+          hasBorders: true,
+        });
+      }
       liveCanvas.setActiveObject(fabricImg);
-      liveCanvas.bringObjectToFront(fabricImg);
-      liveCanvas.requestRenderAll();
+      syncFabricLayerStack(
+        liveCanvas,
+        useEditorStore.getState().getLayers(),
+      );
+      attachMediaOverlay(liveCanvas, fabricImg as any);
 
       if (!silent) {
         const currentVideoState = useEditorStore.getState().videoState;
@@ -594,10 +716,12 @@ export const addMediaFromUrl = async (
           locked: false,
           visible: true,
           objectId: objectId,
+          track: getNextOverlayTrack(useEditorStore.getState().getLayers()),
           data: {
             url,
             name: imageDisplayName,
             originalUrl: url,
+            userPlaced: Boolean(placement),
             adjustments: {
               brightness: 0,
               contrast: 0,
@@ -628,7 +752,23 @@ export const addMediaFromUrl = async (
           .saveToHistory(JSON.stringify(liveCanvas.toJSON()));
         fabricImg.set({ visible: true, opacity: 1 });
         liveCanvas.setActiveObject(fabricImg);
-        liveCanvas.requestRenderAll();
+        syncFabricLayerStack(
+          liveCanvas,
+          useEditorStore.getState().getLayers(),
+        );
+        attachMediaOverlay(
+          liveCanvas,
+          fabricImg as any,
+          useEditorStore
+            .getState()
+            .getLayers()
+            .find((layer) => layer.objectId === objectId),
+        );
+        requestAnimationFrame(() => {
+          fabricImg.setCoords();
+          (fabricImg as any)._syncMediaOverlay?.();
+          liveCanvas.requestRenderAll();
+        });
         toast.success(
           shouldAutoResizeCanvasToImage
             ? `Canvas sized to ${imgWidth}×${imgHeight}`
@@ -654,19 +794,33 @@ export const addMediaFromUrl = async (
 
 export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric.Canvas, objectId: string) => {
   const { width, height } = useEditorStore.getState().canvas;
+  const fontFamily = options.fontFamily || "Roboto";
+  const fontWeight = options.fontWeight || "normal";
+  const fill = options.fill || "#ffffff";
+  const fontSize = options.fontSize || 40;
   const textBox = new fabric.IText(text, {
     left: width / 2,
     top: height / 2,
-    fill: "#000000",
-    fontFamily: "Roboto",
-    fontSize: 40,
+    fill,
+    fontFamily,
+    fontWeight,
+    fontSize,
     originX: "center",
     originY: "center",
     ...options,
     name: objectId,
   });
+  (textBox as any).objectId = objectId;
+  (textBox as any).data = {
+    content: text,
+    fontFamily,
+    fontWeight,
+    fill,
+    fontSize,
+  };
   fabricCanvas.add(textBox);
   fabricCanvas.setActiveObject(textBox);
-  fabricCanvas.renderAll();
+  syncFabricLayerStack(fabricCanvas, useEditorStore.getState().getLayers());
+  attachMediaOverlay(fabricCanvas, textBox as any);
   return textBox;
 };

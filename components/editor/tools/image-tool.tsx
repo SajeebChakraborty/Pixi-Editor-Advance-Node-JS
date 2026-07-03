@@ -9,6 +9,8 @@ import Image from "next/image";
 
 import { AssetService } from "@/lib/asset-service";
 import { addMediaFromUrl, PHOTO_DRAG_MIME_TYPE } from "@/lib/editor-utils";
+import { getActiveFabricCanvas } from "@/lib/editor-actions";
+import { applyFabricTransformControls } from "@/lib/fabric-transform-controls";
 import { toast } from "sonner";
 import { uploadEditorAsset } from "@/lib/editor-assets";
 import { getEditorProjectId } from "@/lib/project-persistence";
@@ -42,7 +44,7 @@ export function ImageTool() {
   const waitForFabricCanvas = async (timeoutMs = 5000): Promise<boolean> => {
     const startedAt = Date.now();
     while (Date.now() - startedAt < timeoutMs) {
-      const fabricCanvas = useEditorStore.getState().canvas.fabricCanvas;
+      const fabricCanvas = getActiveFabricCanvas();
       if (
         fabricCanvas &&
         !fabricCanvas.disposed &&
@@ -58,7 +60,7 @@ export function ImageTool() {
 
   const getRenderedImageLayers = () => {
     const state = useEditorStore.getState();
-    const fabricCanvas = state.canvas.fabricCanvas;
+    const fabricCanvas = getActiveFabricCanvas();
     if (!fabricCanvas) return [];
 
     return state.getLayers().filter((layer) => {
@@ -268,12 +270,13 @@ export function ImageTool() {
           false,
           undefined,
           name,
-          undefined,
+          getActiveFabricCanvas(),
           placement,
         );
         const currentState = useEditorStore.getState();
+        const activeCanvas = getActiveFabricCanvas();
         const renderedObject = objectId
-          ? currentState.canvas.fabricCanvas
+          ? activeCanvas
               ?.getObjects()
               .find((object: any) => object.name === objectId)
           : null;
@@ -284,12 +287,14 @@ export function ImageTool() {
         if (
           imageCountAfter > imageCountBefore &&
           renderedObject &&
-          renderedObject.canvas === currentState.canvas.fabricCanvas
+          renderedObject.canvas === activeCanvas
         ) {
-          renderedObject.set({ visible: true, opacity: 1 });
           renderedObject.setCoords();
-          currentState.canvas.fabricCanvas?.setActiveObject(renderedObject);
-          currentState.canvas.fabricCanvas?.requestRenderAll();
+          activeCanvas?.setActiveObject(renderedObject);
+          if (useEditorStore.getState().editorMode === "video") {
+            applyFabricTransformControls(renderedObject);
+          }
+          activeCanvas?.requestRenderAll();
           added = true;
           break;
         }

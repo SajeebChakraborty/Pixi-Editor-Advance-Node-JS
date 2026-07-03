@@ -6,6 +6,7 @@ import type { VideoFilters } from './video-filters'
 import { DEFAULT_VIDEO_FILTERS } from './video-filters'
 import type { ImagePresetId } from './editor-actions'
 import { SCENE_TRANSITION_OPTIONS } from './video-transitions'
+import { OVERLAY_LAYER_TYPES } from './layer-stack'
 
 const transitionLabel = (type: string) =>
   SCENE_TRANSITION_OPTIONS.find((option) => option.value === type)?.label ||
@@ -92,6 +93,47 @@ export const buildTimelineRows = ({
 }): TimelineRow[] => {
   const rows: TimelineRow[] = []
   const compositionDuration = Math.max(0.1, composition.duration || 0.1)
+
+  const overlayLayers = layers.filter((layer) =>
+    ['text', 'image', 'sticker', 'shape'].includes(layer.type),
+  )
+  const overlayTrackMap = new Map<number, Layer[]>()
+
+  overlayLayers.forEach((layer) => {
+    const track = typeof layer.track === 'number' ? layer.track : 3
+    if (!overlayTrackMap.has(track)) overlayTrackMap.set(track, [])
+    overlayTrackMap.get(track)!.push(layer)
+  })
+
+  Array.from(overlayTrackMap.entries())
+    .sort(([left], [right]) => right - left)
+    .forEach(([trackIndex, trackLayers]) => {
+      rows.push({
+        id: `row-overlay-${trackIndex}`,
+        kind: 'overlay',
+        label:
+          trackLayers.length === 1
+            ? trackLayers[0].type === 'text'
+              ? 'Text'
+              : trackLayers[0].type === 'image'
+                ? 'Image'
+                : 'Overlay'
+            : `Overlay ${trackIndex - 2}`,
+        trackIndex,
+        segments: trackLayers.map((layer) => ({
+          id: layer.id,
+          kind: layer.type === 'text' ? 'text' : 'overlay',
+          label: layer.name || layer.type,
+          startTime: Number(layer.startTime || 0),
+          duration: Number(layer.duration || 0),
+          layerId: layer.id,
+          selectable: true,
+          draggable: true,
+          resizable: true,
+        })),
+        addable: true,
+      })
+    })
 
   const videoLayers = layers.filter((layer) => layer.type === 'video')
   rows.push({
@@ -286,54 +328,13 @@ export const buildTimelineRows = ({
         ],
   })
 
-  const overlayLayers = layers.filter((layer) =>
-    ['text', 'image', 'sticker', 'shape'].includes(layer.type),
-  )
-  const overlayTrackMap = new Map<number, Layer[]>()
-
-  overlayLayers.forEach((layer) => {
-    const track = typeof layer.track === 'number' ? layer.track : 3
-    if (!overlayTrackMap.has(track)) overlayTrackMap.set(track, [])
-    overlayTrackMap.get(track)!.push(layer)
-  })
-
-  Array.from(overlayTrackMap.entries())
-    .sort(([left], [right]) => left - right)
-    .forEach(([trackIndex, trackLayers]) => {
-      rows.push({
-        id: `row-overlay-${trackIndex}`,
-        kind: 'overlay',
-        label:
-          trackLayers.length === 1
-            ? trackLayers[0].type === 'text'
-              ? 'Text'
-              : 'Overlay'
-            : `Overlay ${trackIndex - 2}`,
-        trackIndex,
-        segments: trackLayers.map((layer) => ({
-          id: layer.id,
-          kind: layer.type === 'text' ? 'text' : 'overlay',
-          label: layer.name || layer.type,
-          startTime: Number(layer.startTime || 0),
-          duration: Number(layer.duration || 0),
-          layerId: layer.id,
-          selectable: true,
-          draggable: true,
-          resizable: true,
-        })),
-        addable: true,
-      })
-    })
-
   return rows
 }
 
 export const getNextOverlayTrack = (layers: Layer[]) => {
   const overlayTracks = layers
-    .filter((layer) =>
-      ['text', 'image', 'sticker', 'shape', 'audio'].includes(layer.type),
-    )
-    .map((layer) => layer.track ?? 0)
+    .filter((layer) => OVERLAY_LAYER_TYPES.has(layer.type))
+    .map((layer) => layer.track ?? 0);
 
-  return Math.max(3, ...overlayTracks, 2) + 1
+  return Math.max(3, ...overlayTracks, 2) + 1;
 }

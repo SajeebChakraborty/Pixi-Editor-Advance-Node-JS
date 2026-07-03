@@ -1,7 +1,11 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
-import { commitCanvasHistory } from "@/lib/editor-actions";
+import { commitCanvasHistory, getActiveFabricCanvas } from "@/lib/editor-actions";
+import { applyFabricTransformControls } from "@/lib/fabric-transform-controls";
+import { getNextOverlayTrack } from "@/lib/timeline-tracks";
+import { syncFabricLayerStack } from "@/lib/layer-stack";
+import { attachMediaOverlay } from "@/lib/media-overlay";
 import { TEXT_FONT_CATEGORIES, type TextFontPreset } from "@/lib/editor-fonts";
 import { useEditorStore, type Layer } from "@/lib/store";
 import { IText } from "fabric";
@@ -24,7 +28,7 @@ export function TextTool() {
 
   const applyFontToSelectedText = (style: TextFontPreset) => {
     const store = useEditorStore.getState();
-    const fabricCanvas = store.canvas.fabricCanvas;
+    const fabricCanvas = getActiveFabricCanvas();
     if (!fabricCanvas) return false;
 
     const layers = store.getLayers();
@@ -93,7 +97,7 @@ export function TextTool() {
   const addText = (text: string, options: any = {}) => {
     // Use getState() to always get the freshest canvas reference.
     const store = useEditorStore.getState();
-    const fabricCanvas = store.canvas.fabricCanvas;
+    const fabricCanvas = getActiveFabricCanvas();
 
     if (!fabricCanvas) {
       console.warn("No active canvas. Click on the artboard first.");
@@ -101,8 +105,13 @@ export function TextTool() {
     }
 
     const id = `text_${Date.now()}`;
+    const isVideoMode = store.editorMode === "video";
     const currentDuration = store.videoState.duration;
-    const duration = Math.max(currentDuration, 3600);
+    const currentTime = store.videoState.currentTime;
+    const startTime = isVideoMode ? currentTime : 0;
+    const duration = isVideoMode
+      ? Math.max(1, currentDuration - currentTime)
+      : Math.max(currentDuration, 3600);
     const fontFamily = options.fontFamily || "Roboto";
     const fontWeight = options.fontWeight || "normal";
     const fill = options.fill || "#ffffff";
@@ -130,13 +139,17 @@ export function TextTool() {
       fill,
       fontSize,
     };
-    (textBox as any).startTime = 0;
+    (textBox as any).startTime = startTime;
     (textBox as any).duration = duration;
 
     // Add to canvas FIRST so object exists when sync effect runs.
     fabricCanvas.add(textBox);
     fabricCanvas.setActiveObject(textBox);
-    fabricCanvas.requestRenderAll();
+    if (store.editorMode === "video") {
+      applyFabricTransformControls(textBox);
+    }
+    syncFabricLayerStack(fabricCanvas, store.getLayers());
+    attachMediaOverlay(fabricCanvas, textBox as any);
 
     // Register layer AFTER the object is on canvas.
     addLayer({
@@ -145,6 +158,7 @@ export function TextTool() {
       locked: false,
       visible: true,
       objectId: id,
+      track: getNextOverlayTrack(store.getLayers()),
       data: {
         content: text,
         fontFamily,
@@ -152,11 +166,14 @@ export function TextTool() {
         fill,
         fontSize,
       },
-      startTime: 0,
+      startTime,
       duration,
     });
 
-    requestAnimationFrame(() => fabricCanvas.requestRenderAll());
+    requestAnimationFrame(() => {
+      const canvas = getActiveFabricCanvas();
+      syncFabricLayerStack(canvas, useEditorStore.getState().getLayers());
+    });
     commitCanvasHistory(fabricCanvas);
   };
 

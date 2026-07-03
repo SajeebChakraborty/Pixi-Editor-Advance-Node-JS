@@ -44,6 +44,7 @@ import {
   type TimelineRow,
   type TimelineSegment,
 } from "@/lib/timeline-tracks";
+import { swapOverlayTracks, syncFabricLayerStack } from "@/lib/layer-stack";
 
 const videoFrameCache = new Map<string, Promise<string[]>>();
 
@@ -220,7 +221,7 @@ export function Timeline() {
   const containerRef = useRef<HTMLDivElement>(null);
   const rulerRef = useRef<HTMLDivElement>(null);
   const dragRef = useRef<{
-    type: "move" | "resize-start" | "resize-end" | "row-resize";
+    type: "move" | "resize-start" | "resize-end" | "row-resize" | "row-reorder";
     layerId: string;
     rowId?: string;
     startX: number;
@@ -234,6 +235,7 @@ export function Timeline() {
     segmentKind?: TimelineSegment["kind"];
     transitionSide?: "before" | "after";
     transitionType?: string;
+    lastY?: number;
   } | null>(null);
 
   const duration = Math.max(
@@ -280,6 +282,7 @@ export function Timeline() {
   const applyDragAt = useCallback((clientX: number, clientY: number) => {
     const drag = dragRef.current;
     if (!drag) return;
+    drag.lastY = clientY;
 
     const store = useEditorStore.getState();
     const currentLayers = store.getLayers();
@@ -292,6 +295,50 @@ export function Timeline() {
     );
     const deltaTime =
       ((clientX - drag.startX) / drag.trackWidth) * timelineDuration;
+
+    if (drag.type === "row-reorder" && drag.rowId) {
+      const overlayRows = buildTimelineRows({
+        layers: currentLayers,
+        composition: currentComposition,
+        filterPreset: store.videoState.filterPreset || "none",
+        filterPresetIntensity: store.videoState.filterPresetIntensity ?? 100,
+        filters: store.videoState.filters,
+        effectStartTime: store.videoState.effectStartTime ?? 0,
+        effectEndTime: store.videoState.effectEndTime ?? 0,
+      }).filter((row) => row.kind === "overlay");
+
+      const sourceIndex = overlayRows.findIndex(
+        (row) => row.trackIndex === drag.originalTrack,
+      );
+      if (sourceIndex === -1) return;
+
+      const rowStride = 56;
+      const targetIndex = Math.max(
+        0,
+        Math.min(
+          overlayRows.length - 1,
+          sourceIndex + Math.round((clientY - drag.startY) / rowStride),
+        ),
+      );
+      if (targetIndex === sourceIndex) return;
+
+      const sourceTrack = overlayRows[sourceIndex].trackIndex;
+      const targetTrack = overlayRows[targetIndex].trackIndex;
+      const swappedLayers = swapOverlayTracks(
+        currentLayers,
+        sourceTrack,
+        targetTrack,
+      );
+      swappedLayers.forEach((layer) => {
+        const previous = currentLayers.find((item) => item.id === layer.id);
+        if (previous && previous.track !== layer.track) {
+          store.updateLayer(layer.id, { track: layer.track });
+        }
+      });
+      drag.originalTrack = targetTrack;
+      drag.startY = clientY;
+      return;
+    }
 
     if (drag.type === "move") {
       const layer = currentLayers.find((item) => item.id === drag.layerId);
@@ -338,7 +385,11 @@ export function Timeline() {
       );
       const deltaY = clientY - drag.startY;
       const trackDelta = Math.round(deltaY / 56);
-      const newTrack = Math.max(0, drag.originalTrack + trackDelta);
+      const minTrack =
+        layer && ["text", "image", "sticker", "shape"].includes(layer.type)
+          ? 3
+          : 0;
+      const newTrack = Math.max(minTrack, drag.originalTrack + trackDelta);
       store.updateLayer(drag.layerId, {
         startTime: newStart,
         track: newTrack,
@@ -487,6 +538,14 @@ export function Timeline() {
         pendingReorder.targetIndex,
       );
     }
+
+    const store = useEditorStore.getState();
+    const fabricCanvas =
+      store.editorMode === "video"
+        ? store.videoFabricCanvas || store.canvas.fabricCanvas
+        : store.canvas.fabricCanvas;
+    syncFabricLayerStack(fabricCanvas, store.getLayers());
+
     dragRef.current = null;
     setIsDragging(false);
   }, [reorderVideoScene]);
@@ -549,11 +608,13 @@ export function Timeline() {
   }, [selectedLayerId, selectedSegmentId, timelineRows]);
 
   const handleAddTextLayer = () => {
+    const objectId = `text_${Date.now()}`;
     addLayer({
       type: "text",
       name: "Text Layer",
       locked: false,
       visible: true,
+      objectId,
       startTime: currentTime,
       duration: Math.max(1, duration - currentTime),
       track: getNextOverlayTrack(layers),
@@ -744,6 +805,31 @@ export function Timeline() {
         originalMediaStart: layer?.mediaStart || 0,
         originalTrack: layer?.track ?? 0,
         segmentKind: segment.kind,
+      },
+      event.currentTarget as HTMLElement,
+      event.pointerId,
+    );
+  };
+
+  const handleRowReorderStart = (
+    event: React.PointerEvent,
+    row: TimelineRow,
+  ) => {
+    if (event.button !== 0 || row.kind !== "overlay") return;
+    event.stopPropagation();
+    event.preventDefault();
+    beginDrag(
+      {
+        type: "row-reorder",
+        layerId: "",
+        rowId: row.id,
+        startX: event.clientX,
+        startY: event.clientY,
+        trackWidth: 1,
+        originalStart: 0,
+        originalDuration: 0,
+        originalTrack: row.trackIndex,
+        originalMediaStart: 0,
       },
       event.currentTarget as HTMLElement,
       event.pointerId,
@@ -1004,6 +1090,7 @@ export function Timeline() {
                 onSegmentMouseDown={handleSegmentMouseDown}
                 onSegmentResizeStart={handleSegmentResizeStart}
                 onRowResizeStart={handleRowResizeStart}
+                onRowReorderStart={handleRowReorderStart}
               />
             ))}
 
@@ -1054,6 +1141,7 @@ function TimelineTrackRow({
   onSegmentMouseDown,
   onSegmentResizeStart,
   onRowResizeStart,
+  onRowReorderStart,
 }: {
   row: TimelineRow;
   duration: number;
@@ -1073,6 +1161,10 @@ function TimelineTrackRow({
     event: React.PointerEvent,
     rowId: string,
     currentHeight: number,
+  ) => void;
+  onRowReorderStart: (
+    event: React.PointerEvent,
+    row: TimelineRow,
   ) => void;
 }) {
   const layers = useEditorStore.getState().getLayers();
@@ -1109,7 +1201,19 @@ function TimelineTrackRow({
           className={cn(
             "flex w-full items-center gap-2 rounded-lg border border-gray-100 bg-white/50 px-2 py-1.5 text-[9px] font-black uppercase text-gray-400 shadow-sm backdrop-blur-sm transition-all",
             isRowSelected && "border-blue-500/30 bg-blue-50/50 text-blue-600",
+            row.kind === "overlay" &&
+              "cursor-grab active:cursor-grabbing hover:border-orange-200 hover:bg-orange-50/60",
           )}
+          onPointerDown={
+            row.kind === "overlay"
+              ? (event) => onRowReorderStart(event, row)
+              : undefined
+          }
+          title={
+            row.kind === "overlay"
+              ? "Drag up/down to change layer order"
+              : undefined
+          }
         >
           <RowIcon className={cn("h-3.5 w-3.5", rowAccent)} />
           <span className="max-w-[50px] truncate">{row.label}</span>

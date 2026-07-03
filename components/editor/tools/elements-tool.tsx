@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { useEditorStore } from "@/lib/store";
+import { getActiveFabricCanvas } from "@/lib/editor-actions";
 import { FabricImage } from "fabric";
 import { Asset, AssetService } from "@/lib/asset-service";
 import { cn } from "@/lib/utils";
@@ -49,7 +50,15 @@ export function ElementsTool() {
       const store = useEditorStore.getState();
       const { addMediaFromUrl } = await import("@/lib/editor-utils");
 
-      await addMediaFromUrl(asset.url, store, asset.type as any);
+      await addMediaFromUrl(
+        asset.url,
+        store,
+        asset.type as any,
+        false,
+        undefined,
+        asset.name,
+        getActiveFabricCanvas(),
+      );
     } catch (err) {
       console.error("Error adding element:", err);
       toast.error("Failed to add element. Verify your S3 CORS settings.");

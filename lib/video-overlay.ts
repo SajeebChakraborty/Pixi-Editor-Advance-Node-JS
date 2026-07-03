@@ -107,6 +107,8 @@ export function fitFabricCanvasToContainer(
       inset: "0",
       width: "100%",
       height: "100%",
+      zIndex: "50",
+      background: "transparent",
     });
   }
 }
@@ -169,7 +171,30 @@ function getObjectSceneRect(object: FabricObject) {
   };
 }
 
-function getObjectOverlayRect(object: FabricObject, canvas: Canvas) {
+export function getObjectOverlayRect(object: FabricObject, canvas: Canvas) {
+  object.setCoords();
+  const bounds = (canvas as any).artboardExportBounds as
+    | { left: number; top: number; width: number; height: number }
+    | undefined;
+  const rect = object.getBoundingRect();
+
+  if (bounds) {
+    const project = (canvas as any).projectDimensions as
+      | { width: number; height: number }
+      | undefined;
+    const projectWidth = Math.max(1, project?.width || canvas.getWidth());
+    const projectHeight = Math.max(1, project?.height || canvas.getHeight());
+    const scaleX = bounds.width / projectWidth;
+    const scaleY = bounds.height / projectHeight;
+
+    return {
+      left: rect.left * scaleX,
+      top: rect.top * scaleY,
+      width: Math.max(1, rect.width * scaleX),
+      height: Math.max(1, rect.height * scaleY),
+    };
+  }
+
   const scene = getObjectSceneRect(object);
   const { scaleX, scaleY } = getViewportScale(canvas);
 
@@ -181,12 +206,31 @@ function getObjectOverlayRect(object: FabricObject, canvas: Canvas) {
   };
 }
 
+export function centerObjectOnProjectCanvas(
+  object: FabricObject,
+  canvas: Canvas,
+) {
+  const project = (canvas as any).projectDimensions as
+    | { width: number; height: number }
+    | undefined;
+  const width = Math.max(1, project?.width || canvas.getWidth());
+  const height = Math.max(1, project?.height || canvas.getHeight());
+
+  object.set({
+    originX: "center",
+    originY: "center",
+    left: width / 2,
+    top: height / 2,
+  });
+  object.setCoords();
+}
+
 function getOverlayRoot(canvas: Canvas) {
   const wrapper = canvas.wrapperEl;
   const host = wrapper?.parentElement;
   if (!wrapper || !host) return null;
 
-  wrapper.style.zIndex = "30";
+  wrapper.style.zIndex = "50";
   wrapper.style.background = "transparent";
 
   let root = Array.from(host.children).find(
@@ -202,7 +246,7 @@ function getOverlayRoot(canvas: Canvas) {
       position: "absolute",
       overflow: "hidden",
       pointerEvents: "none",
-      zIndex: "20",
+      zIndex: "5",
       background: "transparent",
     });
     host.insertBefore(root, wrapper);
@@ -248,6 +292,7 @@ function updateNativeVideoPlaceholder(object: VideoFabricObject) {
     scaleX: Number(object.scaleX || 1),
     scaleY: Number(object.scaleY || 1),
     objectCaching: false,
+    opacity: 0,
   });
   object._nativeVideoPlaceholder = true;
 }

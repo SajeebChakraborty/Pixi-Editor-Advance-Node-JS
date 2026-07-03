@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useRef, useEffect, useState, useCallback, useMemo, type DragEvent } from "react";
 import { useEditorStore } from "@/lib/store";
 import {
   Play,
@@ -26,7 +26,11 @@ import {
 } from "@/lib/linked-video-audio";
 import {
   addMediaFromUrl,
+  addTextToCanvas,
   applyPersistedLayerState,
+  PHOTO_DRAG_MIME_TYPE,
+  persistOverlayObjectState,
+  resolveCanvasPlacementFromEvent,
 } from "@/lib/editor-utils";
 import {
   buildVideoFilterCss,
@@ -42,6 +46,8 @@ import {
   syncVideoOverlays,
   syncVideoOverlay,
 } from "@/lib/video-overlay";
+import { syncFabricLayerStack } from "@/lib/layer-stack";
+import { detachMediaOverlays, syncMediaOverlays, attachMediaOverlay, isMediaOverlayObject } from "@/lib/media-overlay";
 import {
   applyFabricTransformControls,
   installFabricTransformControlDefaults,
@@ -127,6 +133,70 @@ export function VideoPlayerCanvas() {
     [getLayers, globalCanvas.pages, globalCanvas.activePageId],
   );
 
+  const [isCanvasDragOver, setIsCanvasDragOver] = useState(false);
+
+  const handleCanvasDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setIsCanvasDragOver(true);
+  }, []);
+
+  const handleCanvasDragLeave = useCallback((event: DragEvent<HTMLDivElement>) => {
+    if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+    setIsCanvasDragOver(false);
+  }, []);
+
+  const handleCanvasDrop = useCallback(async (event: DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setIsCanvasDragOver(false);
+
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+
+    const placement = resolveCanvasPlacementFromEvent(canvas, event.nativeEvent);
+    const store = useEditorStore.getState();
+    const photoPayload = event.dataTransfer.getData(PHOTO_DRAG_MIME_TYPE);
+
+    try {
+      if (photoPayload) {
+        const payload = JSON.parse(photoPayload) as {
+          url?: string;
+          name?: string;
+        };
+        if (!payload.url) return;
+        await addMediaFromUrl(
+          payload.url,
+          store,
+          "image",
+          false,
+          undefined,
+          payload.name || "Image",
+          canvas,
+          placement,
+        );
+        return;
+      }
+
+      const file = event.dataTransfer.files?.[0];
+      if (file?.type.startsWith("image/")) {
+        const url = URL.createObjectURL(file);
+        await addMediaFromUrl(
+          url,
+          store,
+          "image",
+          false,
+          undefined,
+          file.name.replace(/\.[^.]+$/, "") || "Image",
+          canvas,
+          placement,
+        );
+      }
+    } catch (error) {
+      console.error("[VIDEO_CANVAS_DROP]", error);
+      toast.error("Could not place image on the video.");
+    }
+  }, []);
+
   const syncCanvasSize = useCallback(() => {
     const canvas = fabricRef.current;
     const container = containerRef.current;
@@ -167,6 +237,7 @@ export function VideoPlayerCanvas() {
       },
     );
     syncVideoOverlays(canvas);
+    syncMediaOverlays(canvas, useEditorStore.getState().getLayers());
     canvas.requestRenderAll();
   }, []);
 
@@ -188,7 +259,10 @@ export function VideoPlayerCanvas() {
 
     installFabricTransformControlDefaults(canvas);
 
-    const syncNativeVideoLayers = () => syncVideoOverlays(canvas);
+    const syncNativeVideoLayers = () => {
+      syncVideoOverlays(canvas);
+      syncMediaOverlays(canvas, useEditorStore.getState().getLayers());
+    };
     canvas.on("after:render", syncNativeVideoLayers);
 
     const syncActiveVideoOverlay = (target: FabricObject | undefined) => {
@@ -199,13 +273,35 @@ export function VideoPlayerCanvas() {
       canvas.requestRenderAll();
     };
 
-    canvas.on("object:scaling", (event) => syncActiveVideoOverlay(event.target));
-    canvas.on("object:moving", (event) => syncActiveVideoOverlay(event.target));
+    canvas.on("object:scaling", (event) => {
+      const target = event.target as any;
+      if (target?._videoEl) {
+        syncActiveVideoOverlay(event.target);
+      } else {
+        target?._syncMediaOverlay?.();
+      }
+    });
+    canvas.on("object:moving", (event) => {
+      const target = event.target as any;
+      if (target?._videoEl) {
+        syncActiveVideoOverlay(event.target);
+      } else {
+        target?._syncMediaOverlay?.();
+      }
+    });
     canvas.on("object:modified", (event) => {
       if (event.target) {
-        (event.target as any)._userTransform = true;
+        const target = event.target as any;
+        if (target._videoEl) {
+          target._userTransform = true;
+          syncActiveVideoOverlay(event.target);
+        } else {
+          target._syncMediaOverlay?.();
+          if (isMediaOverlayObject(event.target)) {
+            persistOverlayObjectState(event.target);
+          }
+        }
       }
-      syncActiveVideoOverlay(event.target);
       saveToHistory(JSON.stringify(canvas.toJSON()));
     });
 
@@ -247,6 +343,7 @@ export function VideoPlayerCanvas() {
         setVideoFabricCanvas(null);
       }
       canvas.off("after:render", syncNativeVideoLayers);
+      detachMediaOverlays(canvas);
       canvas.dispose();
       fabricRef.current = null;
       window.removeEventListener("resize", syncCanvasSize);
@@ -263,9 +360,34 @@ export function VideoPlayerCanvas() {
         if (
           cancelled ||
           !layer.objectId ||
-          !layer.data?.url ||
-          !["image", "video", "sticker"].includes(layer.type) ||
           canvas.getObjects().some((object: any) => object.name === layer.objectId)
+        ) {
+          continue;
+        }
+
+        if (layer.type === "text") {
+          const object = addTextToCanvas(
+            layer.data?.content || layer.name,
+            {
+              fontFamily: layer.data?.fontFamily || "Roboto",
+              fontWeight: layer.data?.fontWeight || "normal",
+              fill: layer.data?.fill || "#ffffff",
+              fontSize: layer.data?.fontSize || 40,
+            },
+            canvas,
+            layer.objectId,
+          );
+          (object as any).startTime = Number(layer.startTime || 0);
+          (object as any).duration = Number(layer.duration || 3600);
+          applyPersistedLayerState(object, layer);
+          applyFabricTransformControls(object);
+          attachMediaOverlay(canvas, object as any, layer);
+          continue;
+        }
+
+        if (
+          !layer.data?.url ||
+          !["image", "video", "sticker"].includes(layer.type)
         ) {
           continue;
         }
@@ -294,6 +416,9 @@ export function VideoPlayerCanvas() {
             applyFabricTransformControls(object);
           } else {
             applyPersistedLayerState(object, layer);
+            applyFabricTransformControls(object);
+            attachMediaOverlay(canvas, object as any, layer);
+            (object as any)._syncMediaOverlay?.();
           }
         }
       }
@@ -307,6 +432,7 @@ export function VideoPlayerCanvas() {
         Math.max(1, Number(globalCanvas.height || 720)),
       );
       syncVideoOverlays(canvas);
+      syncFabricLayerStack(canvas, getLayers());
       canvas.requestRenderAll();
     };
 
@@ -315,6 +441,12 @@ export function VideoPlayerCanvas() {
       cancelled = true;
     };
   }, [getLayers, globalCanvas.activePageId, globalCanvas.pages]);
+
+  useEffect(() => {
+    const canvas = fabricRef.current;
+    if (!canvas) return;
+    syncFabricLayerStack(canvas, getLayers());
+  }, [getLayers, globalCanvas.pages, globalCanvas.activePageId]);
 
   useEffect(() => {
     const width = Math.max(1, Number(globalCanvas.width || 1280));
@@ -555,6 +687,7 @@ export function VideoPlayerCanvas() {
       });
 
       syncVideoOverlays(canvas);
+      syncFabricLayerStack(canvas, getLayers());
       canvas.requestRenderAll();
     }
 
@@ -579,6 +712,7 @@ export function VideoPlayerCanvas() {
           layer.visible !== false &&
           currentTime >= layerStart &&
           currentTime < layerEnd;
+        (object as any)._syncMediaOverlay?.();
       });
       fabricRef.current.requestRenderAll();
     }
@@ -979,7 +1113,14 @@ export function VideoPlayerCanvas() {
           <div className="relative flex min-h-0 flex-1 items-center justify-center">
             <div
               ref={containerRef}
-              className="group relative h-full w-auto max-h-full max-w-full overflow-hidden rounded-2xl border border-white/10 bg-black shadow-[0_0_100px_rgba(37,99,235,0.1)]"
+              onDragOver={handleCanvasDragOver}
+              onDragLeave={handleCanvasDragLeave}
+              onDrop={handleCanvasDrop}
+              className={`group relative h-full w-auto max-h-full max-w-full overflow-hidden rounded-2xl border bg-black shadow-[0_0_100px_rgba(37,99,235,0.1)] transition-colors ${
+                isCanvasDragOver
+                  ? "border-[#8b5cf6] ring-2 ring-[#8b5cf6]/40"
+                  : "border-white/10"
+              }`}
               style={{
                 aspectRatio: `${projectSize.width} / ${projectSize.height}`,
               }}
@@ -1012,10 +1153,17 @@ export function VideoPlayerCanvas() {
               {/* Fabric overlay must sit above the play dim layer for resize handles */}
               <canvas
                 ref={overlayCanvasRef}
-                className="absolute inset-0 z-30 pointer-events-auto"
+                className="absolute inset-0 z-50 pointer-events-auto"
               />
 
-              {!isPlaying && !globalCanvas.selectedLayerId && (
+              {!isPlaying &&
+                !globalCanvas.selectedLayerId &&
+                !isCanvasDragOver &&
+                !getLayers().some(
+                  (layer) =>
+                    ["text", "image", "sticker"].includes(layer.type) &&
+                    layer.visible !== false,
+                ) && (
                 <button
                   type="button"
                   onClick={togglePlayback}
