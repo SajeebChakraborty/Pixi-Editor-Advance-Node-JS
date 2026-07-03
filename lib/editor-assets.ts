@@ -1,5 +1,6 @@
 import type { Asset } from "./store";
 import { supabase } from "./supabase";
+import { verifyEditorAssetAvailable } from "./video-loader";
 
 const parseUploadResponse = async (response: Response) => {
   const contentType = response.headers.get("content-type") || "";
@@ -49,6 +50,10 @@ const uploadFileToStorage = async (file: File, type: Asset["type"]) => {
       errorText.trim() ||
         `Storage upload failed with status ${uploadResponse.status}`,
     );
+  }
+
+  if (type === "video") {
+    await verifyEditorAssetAvailable(presignResult.url);
   }
 
   return presignResult as {

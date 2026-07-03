@@ -3,6 +3,12 @@ import { useEditorStore, type Layer } from "./store";
 import { toast } from "sonner";
 import { resolveVideoPlaybackUrl } from "./video-playback-url";
 import {
+  loadVideoFromCandidates,
+  verifyEditorAssetAvailable,
+  waitForVideoElementDimensions,
+  warmUpVideoElementFrame,
+} from "./video-loader";
+import {
   attachVideoOverlay,
   centerObjectOnProjectCanvas,
   fitFabricCanvasToContainer,
@@ -283,7 +289,6 @@ export const addMediaFromUrl = async (
 
     if (!silent) addRecentAsset({ url, name: videoDisplayName, type: "video" });
     const videoEl = document.createElement("video");
-    videoEl.preload = "auto";
     videoEl.muted = Boolean(videoState?.isMuted);
     videoEl.volume = videoState?.isMuted
       ? 0
@@ -291,92 +296,12 @@ export const addMediaFromUrl = async (
     videoEl.playbackRate = Number(videoState?.playbackRate || 1);
     videoEl.playsInline = true;
 
-    const buildProxyUrl = (targetUrl: string) => {
-      const resolved = resolveVideoPlaybackUrl(targetUrl);
-      return resolved || targetUrl;
-    };
-
-    const loadVideoMetadata = (sourceUrl: string) =>
-      new Promise<void>((resolve, reject) => {
-        const cleanup = () => {
-          window.clearTimeout(timeoutId);
-          videoEl.removeEventListener("loadedmetadata", handleReady);
-          videoEl.removeEventListener("loadeddata", handleReady);
-          videoEl.removeEventListener("canplay", handleReady);
-          videoEl.removeEventListener("error", handleError);
-        };
-
-        const handleReady = () => {
-          cleanup();
-          resolve();
-        };
-        const handleError = () => {
-          cleanup();
-          const mediaError = videoEl.error;
-          const errorCode = mediaError?.code;
-          const errorMap: Record<number, string> = {
-            1: "Video loading aborted",
-            2: "Network error while fetching video",
-            3: "Video decode error (unsupported codec/file)",
-            4: "Video source not supported",
-          };
-          reject(new Error(errorMap[errorCode || 0] || `Failed to load video source: ${sourceUrl}`));
-        };
-        const timeoutId = window.setTimeout(() => {
-          cleanup();
-          reject(new Error("The video server did not return readable metadata in time"));
-        }, 25000);
-
-        videoEl.addEventListener("loadedmetadata", handleReady);
-        videoEl.addEventListener("loadeddata", handleReady);
-        videoEl.addEventListener("canplay", handleReady);
-        videoEl.addEventListener("error", handleError);
-
-        if (/^https?:\/\//i.test(sourceUrl)) {
-          videoEl.crossOrigin = "anonymous";
-        } else {
-          videoEl.removeAttribute("crossorigin");
-        }
-        videoEl.src = sourceUrl;
-        videoEl.load();
-
-        if (videoEl.readyState >= HTMLMediaElement.HAVE_METADATA) {
-          handleReady();
-        }
-      });
-
-    const waitForVideoDimensions = () =>
-      new Promise<void>((resolve, reject) => {
-        const startedAt = Date.now();
-        const maxWaitMs = 4000;
-
-        const check = () => {
-          const w = videoEl.videoWidth || 0;
-          const h = videoEl.videoHeight || 0;
-          if (w > 0 && h > 0) {
-            resolve();
-            return;
-          }
-          if (Date.now() - startedAt > maxWaitMs) {
-            reject(new Error("Video dimensions unavailable"));
-            return;
-          }
-          requestAnimationFrame(check);
-        };
-        check();
-      });
-
     try {
-      try {
-        await loadVideoMetadata(url);
-      } catch (directError) {
-        // Fallback through same-origin proxy for external URLs without CORS.
-        const proxyUrl = buildProxyUrl(url);
-        if (proxyUrl === url) {
-          throw directError instanceof Error ? directError : new Error("Failed to load local video");
-        }
-        await loadVideoMetadata(proxyUrl);
+      if (url.startsWith("/api/assets/file")) {
+        await verifyEditorAssetAvailable(url);
       }
+
+      await loadVideoFromCandidates(videoEl, url);
 
       const resolvedDuration =
         Number.isFinite(videoEl.duration) && videoEl.duration > 0
@@ -390,37 +315,10 @@ export const addMediaFromUrl = async (
       }
 
       // Ensure dimensions are ready before creating Fabric image.
-      await waitForVideoDimensions();
+      await waitForVideoElementDimensions(videoEl);
 
       // Warm up first decodable frame so Fabric does not render a blank white video object.
-      await new Promise<void>((resolve) => {
-        const finalize = () => {
-          videoEl.pause();
-          resolve();
-        };
-
-        const readyEnough = videoEl.readyState >= 2;
-        if (readyEnough) {
-          try {
-            videoEl.currentTime = Math.min(0.05, Math.max(0, (videoEl.duration || 0) - 0.01));
-          } catch {
-            // Ignore seek failures for edge codecs; still continue.
-          }
-          requestAnimationFrame(() => finalize());
-          return;
-        }
-
-        const timeoutId = window.setTimeout(finalize, 1500);
-        videoEl.onloadeddata = () => {
-          window.clearTimeout(timeoutId);
-          try {
-            videoEl.currentTime = Math.min(0.05, Math.max(0, (videoEl.duration || 0) - 0.01));
-          } catch {
-            // Ignore and continue.
-          }
-          requestAnimationFrame(() => finalize());
-        };
-      });
+      await warmUpVideoElementFrame(videoEl);
     } catch (e) {
        console.warn("[VIDEO_METADATA]", e);
        if (!silent) {
@@ -878,35 +776,7 @@ export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric
 };
 
 const loadVideoElementForHistory = (video: HTMLVideoElement, url: string) =>
-  new Promise<void>((resolve, reject) => {
-    const resolved = resolveVideoPlaybackUrl(url);
-    video.preload = "auto";
-    video.playsInline = true;
-    video.muted = true;
-    video.src = resolved;
-    video.load();
-
-    const finish = () => {
-      cleanup();
-      resolve();
-    };
-    const fail = () => {
-      cleanup();
-      reject(new Error("Could not reload video for history restore"));
-    };
-    const cleanup = () => {
-      video.removeEventListener("loadedmetadata", finish);
-      video.removeEventListener("error", fail);
-    };
-
-    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
-      resolve();
-      return;
-    }
-
-    video.addEventListener("loadedmetadata", finish, { once: true });
-    video.addEventListener("error", fail, { once: true });
-  });
+  loadVideoFromCandidates(video, url);
 
 export const rehydrateCanvasMediaAfterHistory = async (
   canvas: fabric.Canvas,

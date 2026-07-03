@@ -3,6 +3,7 @@ import {
   resolveCompositionFrame,
   type ResolvedSceneFrame,
 } from "./video-composition";
+import { loadVideoFromCandidates } from "./video-loader";
 import {
   resolveVideoPlaybackUrl,
   videoNeedsCrossOrigin,
@@ -47,32 +48,6 @@ const pickRecorderMime = (format: VideoExportFormat) => {
     candidates.find((mime) => MediaRecorder.isTypeSupported(mime)) || null
   );
 };
-
-const waitForMetadata = (video: HTMLVideoElement) =>
-  new Promise<void>((resolve, reject) => {
-    if (video.readyState >= 1) {
-      resolve();
-      return;
-    }
-    const timeoutId = window.setTimeout(
-      () => reject(new Error("Timed out while loading an export source")),
-      20000,
-    );
-    const finish = () => {
-      window.clearTimeout(timeoutId);
-      video.removeEventListener("loadedmetadata", finish);
-      video.removeEventListener("error", fail);
-      resolve();
-    };
-    const fail = () => {
-      window.clearTimeout(timeoutId);
-      video.removeEventListener("loadedmetadata", finish);
-      video.removeEventListener("error", fail);
-      reject(new Error("Could not decode a video used by this composition"));
-    };
-    video.addEventListener("loadedmetadata", finish, { once: true });
-    video.addEventListener("error", fail, { once: true });
-  });
 
 const waitForAudioMetadata = (audio: HTMLAudioElement) =>
   new Promise<void>((resolve, reject) => {
@@ -199,17 +174,10 @@ export const exportVideo = async (
       const sourceUrl = scene.layer.data?.url;
       if (!sourceUrl || sourceVideos.has(scene.layer.id)) return;
       const video = document.createElement("video");
-      const resolvedSource = resolveVideoPlaybackUrl(sourceUrl);
-      if (videoNeedsCrossOrigin(resolvedSource)) {
-        video.crossOrigin = "anonymous";
-      }
-      video.preload = "auto";
       video.muted = false;
       video.playsInline = true;
-      video.src = resolvedSource;
-      video.load();
       sourceVideos.set(scene.layer.id, video);
-      await waitForMetadata(video);
+      await loadVideoFromCandidates(video, sourceUrl);
     }),
   );
 

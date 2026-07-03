@@ -1,6 +1,7 @@
 import {
   DeleteObjectCommand,
   GetObjectCommand,
+  HeadObjectCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
@@ -116,6 +117,32 @@ export class S3Storage {
       });
     } catch (error) {
       console.error("[S3] Presign failed:", formatStorageError(error));
+      return null;
+    }
+  }
+
+  /**
+   * Read object metadata without downloading the full file.
+   */
+  static async headObject(fileName: string) {
+    try {
+      const result = await s3Client.send(
+        new HeadObjectCommand({
+          Bucket: BUCKET_NAME,
+          Key: fileName,
+        }),
+      );
+
+      return {
+        contentType: result.ContentType,
+        contentLength: result.ContentLength,
+        acceptRanges: result.AcceptRanges,
+      };
+    } catch (error) {
+      console.error(
+        `[S3] Head failed (bucket: ${BUCKET_NAME}, key: ${fileName})`,
+        formatStorageError(error),
+      );
       return null;
     }
   }
