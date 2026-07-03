@@ -12,7 +12,7 @@ import { AssetService } from "@/lib/asset-service";
 import { uploadEditorAsset } from "@/lib/editor-assets";
 import { getEditorProjectId } from "@/lib/project-persistence";
 
-const MAX_VIDEO_UPLOAD_BYTES = 50 * 1024 * 1024;
+const MAX_VIDEO_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 export function VideoTool() {
   const searchParams = useSearchParams();
@@ -121,7 +121,7 @@ export function VideoTool() {
 
   const processVideoFile = async (file: File) => {
     if (file.size > MAX_VIDEO_UPLOAD_BYTES) {
-      toast.error("Video is too large. Please upload a file under 50MB.");
+      toast.error("Video is too large. Please upload a file under 200MB.");
       return;
     }
 
@@ -515,7 +515,7 @@ export function VideoTool() {
           <span>Supported Formats</span>
         </div>
         <div className="text-[10px] text-gray-500 space-y-1">
-          <p>• MP4, WebM (max 50MB)</p>
+          <p>• MP4, WebM (max 200MB)</p>
           <p>• Drag & drop supported</p>
           <p>• Auto-optimizes for web playback</p>
         </div>

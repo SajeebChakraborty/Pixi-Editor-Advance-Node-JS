@@ -7,7 +7,7 @@ export const runtime = "nodejs";
 const ALLOWED_TYPES = new Set(["image", "video", "audio"]);
 const MAX_UPLOAD_BYTES: Record<string, number> = {
   image: 15 * 1024 * 1024,
-  video: 50 * 1024 * 1024,
+  video: 200 * 1024 * 1024,
   audio: 25 * 1024 * 1024,
 };
 
