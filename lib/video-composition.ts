@@ -11,6 +11,98 @@ export interface SceneTransition {
   duration: number;
 }
 
+export interface MidClipTransition {
+  id: string;
+  offset: number;
+  duration: number;
+  type: SceneTransitionType;
+}
+
+export const getMidClipTransitions = (layer: Layer): MidClipTransition[] => {
+  const raw = layer.data?.transitionKeyframes;
+  if (!Array.isArray(raw)) return [];
+
+  return raw
+    .map((item) => ({
+      id: String(item?.id || ""),
+      offset: finiteNonNegative(item?.offset),
+      duration: finiteNonNegative(item?.duration),
+      type: (item?.type || "none") as SceneTransitionType,
+    }))
+    .filter(
+      (item) =>
+        item.id && item.type !== "none" && item.duration >= MIN_SCENE_DURATION,
+    );
+};
+
+export const clampMidClipTransition = (
+  transition: Omit<MidClipTransition, "id">,
+  clipDuration: number,
+): Omit<MidClipTransition, "id"> => {
+  const safeClipDuration = Math.max(MIN_SCENE_DURATION, clipDuration);
+  const maxDuration = Math.max(
+    MIN_SCENE_DURATION,
+    Math.min(safeClipDuration / 2, safeClipDuration),
+  );
+  const duration =
+    transition.type === "none"
+      ? 0
+      : Math.min(
+          Math.max(MIN_SCENE_DURATION, transition.duration),
+          maxDuration,
+        );
+  const maxOffset = Math.max(0, safeClipDuration - duration);
+  const offset = Math.min(Math.max(0, transition.offset), maxOffset);
+
+  return {
+    ...transition,
+    offset,
+    duration,
+  };
+};
+
+export const splitMidClipTransitions = (
+  keyframes: MidClipTransition[],
+  splitOffset: number,
+  side: "left" | "right",
+): MidClipTransition[] => {
+  const splitAt = Math.max(0, splitOffset);
+
+  return keyframes.flatMap((keyframe) => {
+    const keyframeEnd = keyframe.offset + keyframe.duration;
+
+    if (side === "left") {
+      if (keyframe.offset >= splitAt) return [];
+      if (keyframeEnd <= splitAt) return [keyframe];
+      return [
+        {
+          ...keyframe,
+          duration: Math.max(MIN_SCENE_DURATION, splitAt - keyframe.offset),
+        },
+      ];
+    }
+
+    if (keyframeEnd <= splitAt) return [];
+    if (keyframe.offset >= splitAt) {
+      return [
+        {
+          ...keyframe,
+          offset: keyframe.offset - splitAt,
+        },
+      ];
+    }
+
+    return [
+      {
+        ...keyframe,
+        id: keyframe.id,
+        offset: 0,
+        duration: Math.max(MIN_SCENE_DURATION, keyframeEnd - splitAt),
+      },
+    ];
+  });
+};
+
 export interface CompositionScene {
   id: string;
   layer: Layer;
@@ -389,6 +481,21 @@ export const resolveCompositionFrame = (
         style = mergeFrameStyles(
           style,
           applyExitTransition(scene.transitionAfter.type, progress),
+        );
+      }
+    }
+
+    for (const midTransition of getMidClipTransitions(scene.layer)) {
+      const midStart = midTransition.offset;
+      const midEnd = midTransition.offset + midTransition.duration;
+      if (sceneElapsed >= midStart && sceneElapsed < midEnd) {
+        const progress = getTransitionProgress(
+          sceneElapsed - midStart,
+          midTransition.duration,
+        );
+        style = mergeFrameStyles(
+          style,
+          applyEnterTransition(midTransition.type, progress),
         );
       }
     }

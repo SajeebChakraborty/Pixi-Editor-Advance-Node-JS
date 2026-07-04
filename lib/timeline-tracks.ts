@@ -1,5 +1,6 @@
 import type { Layer } from './store'
 import type { VideoComposition } from './video-composition'
+import { getMidClipTransitions } from './video-composition'
 import { getLinkedVideoAudio } from './linked-video-audio'
 import { IMAGE_PRESETS } from './editor-actions'
 import type { VideoFilters } from './video-filters'
@@ -33,8 +34,9 @@ export interface TimelineSegment {
   selectable?: boolean
   draggable?: boolean
   resizable?: boolean
-  transitionSide?: 'before' | 'after' | 'junction'
+  transitionSide?: 'before' | 'after' | 'junction' | 'mid'
   transitionType?: string
+  transitionId?: string
   linkedLayerName?: string
 }
 
@@ -189,6 +191,25 @@ export const buildTimelineRows = ({
         linkedLayerName: scene.layer.name || 'Video',
       })
     }
+
+    getMidClipTransitions(scene.layer).forEach((midTransition) => {
+      transitionSegments.push({
+        id: `transition-mid-${scene.layer.id}-${midTransition.id}`,
+        kind: 'transition',
+        label: transitionLabel(midTransition.type),
+        startTime: scene.timelineStart + midTransition.offset,
+        duration: midTransition.duration,
+        layerId: scene.layer.id,
+        virtual: true,
+        selectable: true,
+        draggable: true,
+        resizable: true,
+        transitionSide: 'mid',
+        transitionType: midTransition.type,
+        transitionId: midTransition.id,
+        linkedLayerName: scene.layer.name || 'Video',
+      })
+    })
 
     if (nextScene) {
       const effectiveDuration = nextScene.transitionBefore.duration

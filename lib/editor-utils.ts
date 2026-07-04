@@ -11,8 +11,10 @@ import {
 import {
   attachVideoOverlay,
   centerObjectOnProjectCanvas,
+  cloneVideoFabricObjectForSplit,
   fitFabricCanvasToContainer,
   fitVideoObjectToCanvas,
+  getProjectCanvasSizeForVideo,
   refitAllVideosToProjectCanvas,
   setVideoOverlayVisibility,
   syncVideoOverlays,
@@ -352,6 +354,8 @@ export const addMediaFromUrl = async (
         : undefined;
 
     if (!silent && isFirstVideo) {
+      const canvasSize = getProjectCanvasSizeForVideo(vWidth, vHeight);
+      currentStore.setCanvas(canvasSize);
       await new Promise<void>((resolve) => {
         requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
       });
@@ -367,8 +371,18 @@ export const addMediaFromUrl = async (
     }
 
     const projectCanvas = useEditorStore.getState().canvas;
-    const targetWidth = Math.max(1, projectCanvas.width || baseWidth);
-    const targetHeight = Math.max(1, projectCanvas.height || baseHeight);
+    const targetWidth = Math.max(
+      1,
+      !silent && isFirstVideo
+        ? projectCanvas.width || vWidth
+        : projectCanvas.width || baseWidth,
+    );
+    const targetHeight = Math.max(
+      1,
+      !silent && isFirstVideo
+        ? projectCanvas.height || vHeight
+        : projectCanvas.height || baseHeight,
+    );
     const transparentPixel = document.createElement("canvas");
     transparentPixel.width = 1;
     transparentPixel.height = 1;
@@ -489,7 +503,7 @@ export const addMediaFromUrl = async (
       targetCanvas.requestRenderAll();
       toast.success(
         isFirstVideo
-          ? "Video added to canvas!"
+          ? `Video added — canvas set to ${targetWidth}×${targetHeight}`
           : "Video appended to the timeline!",
       );
       requestAnimationFrame(() => {
@@ -778,6 +792,84 @@ export const addTextToCanvas = (text: string, options: any, fabricCanvas: fabric
 const loadVideoElementForHistory = (video: HTMLVideoElement, url: string) =>
   loadVideoFromCandidates(video, url);
 
+const findVideoSourceLayerOnCanvas = (
+  canvas: fabric.Canvas,
+  layers: Layer[],
+  targetLayer: Layer,
+) =>
+  layers.find(
+    (candidate) =>
+      candidate.id !== targetLayer.id &&
+      candidate.type === "video" &&
+      candidate.data?.url === targetLayer.data?.url &&
+      candidate.objectId &&
+      canvas
+        .getObjects()
+        .some((object) => (object as any).name === candidate.objectId),
+  );
+
+export const ensureMissingVideoFabricObjects = async (
+  canvas: fabric.Canvas,
+  layers: Layer[],
+  projectWidth: number,
+  projectHeight: number,
+): Promise<void> => {
+  const store = useEditorStore.getState();
+
+  for (const layer of layers) {
+    if (layer.type !== "video" || !layer.objectId || !layer.data?.url) continue;
+    if (canvas.getObjects().some((object) => (object as any).name === layer.objectId)) {
+      continue;
+    }
+
+    const sourceLayer = findVideoSourceLayerOnCanvas(canvas, layers, layer);
+    if (sourceLayer?.objectId) {
+      const cloned = await cloneVideoFabricObjectForSplit(
+        canvas,
+        sourceLayer.objectId,
+        layer.objectId,
+      );
+      if (cloned) {
+        fitVideoObjectToCanvas(
+          cloned,
+          projectWidth,
+          projectHeight,
+          Math.max(
+            1,
+            Number(
+              layer.data.width ||
+                sourceLayer.data?.width ||
+                cloned._videoEl?.videoWidth ||
+                projectWidth,
+            ),
+          ),
+          Math.max(
+            1,
+            Number(
+              layer.data.height ||
+                sourceLayer.data?.height ||
+                cloned._videoEl?.videoHeight ||
+                projectHeight,
+            ),
+          ),
+        );
+        applyFabricTransformControls(cloned);
+        continue;
+      }
+    }
+
+    await addMediaFromUrl(
+      layer.data.url,
+      store,
+      "video",
+      true,
+      layer.objectId,
+      layer.data.name || layer.name,
+      canvas,
+    );
+  }
+};
+
 export const rehydrateCanvasMediaAfterHistory = async (
   canvas: fabric.Canvas,
   layers: Layer[],
@@ -835,18 +927,34 @@ export const rehydrateCanvasMediaAfterHistory = async (
         layer.data?.url &&
         ["image", "video", "sticker"].includes(layer.type)
       ) {
-        await addMediaFromUrl(
-          layer.data.url,
-          store,
-          layer.type === "video" ? "video" : "image",
-          true,
-          layer.objectId,
-          layer.data?.name || layer.name,
-          canvas,
-        );
-        object = canvas
-          .getObjects()
-          .find((candidate) => (candidate as any).name === layer.objectId);
+        if (layer.type === "video") {
+          const sourceLayer = findVideoSourceLayerOnCanvas(canvas, layers, layer);
+          if (sourceLayer?.objectId && layer.objectId) {
+            const cloned = await cloneVideoFabricObjectForSplit(
+              canvas,
+              sourceLayer.objectId,
+              layer.objectId,
+            );
+            if (cloned) {
+              object = cloned as fabric.FabricObject;
+            }
+          }
+        }
+
+        if (!object) {
+          await addMediaFromUrl(
+            layer.data.url,
+            store,
+            layer.type === "video" ? "video" : "image",
+            true,
+            layer.objectId,
+            layer.data?.name || layer.name,
+            canvas,
+          );
+          object = canvas
+            .getObjects()
+            .find((candidate) => (candidate as any).name === layer.objectId);
+        }
       }
     }
 

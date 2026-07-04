@@ -8,9 +8,9 @@ import { Slider } from "@/components/ui/slider";
 import { cn } from "@/lib/utils";
 import { useEditorStore } from "@/lib/store";
 import { DEFAULT_VIDEO_FILTERS } from "@/lib/video-filters";
-import { buildVideoComposition } from "@/lib/video-composition";
+import { buildVideoComposition, getMidClipTransitions } from "@/lib/video-composition";
 import { TransitionPicker } from "@/components/editor/transition-picker";
-import type { SceneTransitionType } from "@/lib/video-composition";
+import type { MidClipTransition, SceneTransitionType } from "@/lib/video-composition";
 import {
   buildVideoFiltersFromPreset,
   IMAGE_PRESETS,
@@ -28,6 +28,7 @@ export function VideoPlayerProperties() {
   const startTime = useEditorStore((state) => state.videoState.startTime);
   const endTime = useEditorStore((state) => state.videoState.endTime);
   const duration = useEditorStore((state) => state.videoState.duration);
+  const currentTime = useEditorStore((state) => state.videoState.currentTime);
   const filters = {
     ...DEFAULT_VIDEO_FILTERS,
     ...useEditorStore((state) => state.videoState.filters),
@@ -49,6 +50,15 @@ export function VideoPlayerProperties() {
   const videoFabricCanvas = useEditorStore((state) => state.videoFabricCanvas);
   const setJunctionTransition = useEditorStore(
     (state) => state.setJunctionTransition,
+  );
+  const addMidClipTransition = useEditorStore(
+    (state) => state.addMidClipTransition,
+  );
+  const updateMidClipTransition = useEditorStore(
+    (state) => state.updateMidClipTransition,
+  );
+  const removeMidClipTransition = useEditorStore(
+    (state) => state.removeMidClipTransition,
   );
   const setVideoSceneTransition = useEditorStore(
     (state) => state.setVideoSceneTransition,
@@ -122,6 +132,21 @@ export function VideoPlayerProperties() {
         ),
       )
     : maxStartDuration;
+  const playheadInSelectedClip = Boolean(
+    selectedScene &&
+      currentTime >= selectedScene.timelineStart &&
+      currentTime < selectedScene.timelineEnd,
+  );
+  const playheadClipOffset = selectedScene
+    ? Math.max(0, currentTime - selectedScene.timelineStart)
+    : 0;
+  const midClipTransitions: MidClipTransition[] = selectedVideoLayer
+    ? getMidClipTransitions(selectedVideoLayer)
+    : [];
+  const maxMidDuration = Math.max(
+    0.1,
+    (selectedScene?.duration || selectedClipDuration) / 2,
+  );
   const hasTimelineLayer =
     Boolean(selectedLayer) &&
     selectedLayer?.startTime !== undefined &&
@@ -181,6 +206,15 @@ export function VideoPlayerProperties() {
     setJunctionTransition(selectedVideoLayer.id, {
       type,
       duration: Math.max(0.1, duration),
+    });
+  };
+
+  const addTransitionAtPlayhead = (type: SceneTransitionType) => {
+    if (!selectedVideoLayer || !selectedScene || type === "none") return;
+    addMidClipTransition(selectedVideoLayer.id, {
+      offset: playheadClipOffset,
+      duration: 0.5,
+      type,
     });
   };
 
@@ -456,6 +490,117 @@ export function VideoPlayerProperties() {
           </p>
         ) : (
           <div className="space-y-4">
+            {playheadInSelectedClip && (
+              <div className="space-y-4 rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
+                <p className="text-[10px] font-bold text-white/70">
+                  At playhead{" "}
+                  <span className="font-mono text-violet-300">
+                    {formatTime(playheadClipOffset)}
+                  </span>{" "}
+                  in{" "}
+                  <span className="text-violet-300">
+                    {selectedVideoLayer.name}
+                  </span>
+                </p>
+                <TransitionPicker
+                  value="none"
+                  onChange={addTransitionAtPlayhead}
+                />
+                <p className="text-[9px] leading-relaxed text-white/35">
+                  Pick a transition to place it at the current playhead. Drag
+                  the block on the Transitions row to move or resize it.
+                </p>
+              </div>
+            )}
+
+            {midClipTransitions.length > 0 && (
+              <div className="space-y-3">
+                {midClipTransitions.map((midTransition) => (
+                  <div
+                    key={midTransition.id}
+                    className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="text-[10px] font-bold text-white/70">
+                        At{" "}
+                        <span className="font-mono text-violet-300">
+                          {formatTime(midTransition.offset)}
+                        </span>
+                      </p>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          removeMidClipTransition(
+                            selectedVideoLayer.id,
+                            midTransition.id,
+                          )
+                        }
+                        className="text-white/30 hover:text-red-400"
+                        aria-label="Remove transition"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
+                    <TransitionPicker
+                      value={midTransition.type}
+                      onChange={(type) =>
+                        updateMidClipTransition(
+                          selectedVideoLayer.id,
+                          midTransition.id,
+                          { type },
+                        )
+                      }
+                    />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-bold uppercase text-white/50">
+                        <span>Start</span>
+                        <span className="font-mono text-violet-300">
+                          {formatTime(midTransition.offset)}
+                        </span>
+                      </div>
+                      <Slider
+                        value={[midTransition.offset]}
+                        min={0}
+                        max={Math.max(
+                          0,
+                          selectedClipDuration - midTransition.duration,
+                        )}
+                        step={0.1}
+                        onValueChange={(value) =>
+                          updateMidClipTransition(
+                            selectedVideoLayer.id,
+                            midTransition.id,
+                            { offset: value[0] },
+                          )
+                        }
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between text-[10px] font-bold uppercase text-white/50">
+                        <span>Duration</span>
+                        <span className="font-mono text-violet-300">
+                          {midTransition.duration.toFixed(1)}s
+                        </span>
+                      </div>
+                      <Slider
+                        value={[midTransition.duration]}
+                        min={0.1}
+                        max={maxMidDuration}
+                        step={0.1}
+                        onValueChange={(value) =>
+                          updateMidClipTransition(
+                            selectedVideoLayer.id,
+                            midTransition.id,
+                            { duration: value[0] },
+                          )
+                        }
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+
             <div className="space-y-4 rounded-xl border border-white/5 bg-[#18181b]/50 p-4">
               <p className="text-[10px] font-bold text-white/70">
                 Start of{" "}
@@ -559,8 +704,8 @@ export function VideoPlayerProperties() {
 
             <p className="text-[9px] leading-relaxed text-white/35">
               Hover a preview to see how each transition looks, then click to
-              apply. Start and end transitions work on any clip; between-clips
-              transitions appear when another video follows.
+              apply. Use the playhead section for any point in the clip; start
+              and end transitions still work at clip boundaries.
             </p>
           </div>
         )}

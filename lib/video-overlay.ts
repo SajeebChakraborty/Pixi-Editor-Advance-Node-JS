@@ -1,4 +1,5 @@
-import type { Canvas, FabricObject } from "fabric";
+import { FabricImage, type Canvas, type FabricObject } from "fabric";
+import { videoNeedsCrossOrigin } from "./video-playback-url";
 
 export type VideoFabricObject = FabricObject & {
   name?: string;
@@ -20,6 +21,45 @@ const OVERLAY_ROOT_ATTRIBUTE = "data-video-overlay-root";
 
 /** Scale video to fully fit inside the project canvas (no cropping). */
 export const CANVAS_FIT_PADDING = 1;
+
+const MAX_PROJECT_CANVAS_EDGE = 1920;
+const MIN_PROJECT_CANVAS_EDGE = 240;
+
+/** Match project canvas to media aspect ratio (portrait, landscape, or square). */
+export function getProjectCanvasSizeForVideo(
+  mediaWidth: number,
+  mediaHeight: number,
+) {
+  const safeWidth = Math.max(1, Math.round(mediaWidth));
+  const safeHeight = Math.max(1, Math.round(mediaHeight));
+  const longest = Math.max(safeWidth, safeHeight);
+  const scale =
+    longest > MAX_PROJECT_CANVAS_EDGE
+      ? MAX_PROJECT_CANVAS_EDGE / longest
+      : longest < MIN_PROJECT_CANVAS_EDGE
+        ? MIN_PROJECT_CANVAS_EDGE / longest
+        : 1;
+
+  return {
+    width: Math.max(MIN_PROJECT_CANVAS_EDGE, Math.round(safeWidth * scale)),
+    height: Math.max(MIN_PROJECT_CANVAS_EDGE, Math.round(safeHeight * scale)),
+  };
+}
+
+export function isPortraitMedia(mediaWidth: number, mediaHeight: number) {
+  return mediaHeight > mediaWidth * 1.05;
+}
+
+export function shouldMatchCanvasToVideo(
+  canvasWidth: number,
+  canvasHeight: number,
+  videoWidth: number,
+  videoHeight: number,
+) {
+  const canvasAspect = Math.max(1, canvasWidth) / Math.max(1, canvasHeight);
+  const videoAspect = Math.max(1, videoWidth) / Math.max(1, videoHeight);
+  return Math.abs(canvasAspect - videoAspect) / videoAspect > 0.06;
+}
 
 export function computeContainedVideoRect(
   canvasWidth: number,
@@ -520,4 +560,132 @@ export function maybeFitVideoObjectToCanvas(
     mediaWidth,
     mediaHeight,
   );
+}
+
+async function waitForClonedVideoMetadata(
+  videoEl: HTMLVideoElement,
+  timeoutMs = 15000,
+): Promise<void> {
+  if (videoEl.readyState >= HTMLMediaElement.HAVE_METADATA) return;
+
+  await new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      reject(new Error("Split clip video metadata timed out"));
+    }, timeoutMs);
+
+    const finish = () => {
+      window.clearTimeout(timeout);
+      resolve();
+    };
+
+    videoEl.addEventListener("loadedmetadata", finish, { once: true });
+    videoEl.addEventListener(
+      "error",
+      () => {
+        window.clearTimeout(timeout);
+        reject(new Error("Split clip video failed to load"));
+      },
+      { once: true },
+    );
+    videoEl.load();
+  });
+}
+
+/** Clone an on-canvas video object for a split clip (same source, independent seek). */
+export async function cloneVideoFabricObjectForSplit(
+  canvas: Canvas,
+  sourceObjectId: string,
+  targetObjectId: string,
+): Promise<VideoFabricObject | null> {
+  const existing = canvas
+    .getObjects()
+    .find((object) => (object as VideoFabricObject).name === targetObjectId) as
+    | VideoFabricObject
+    | undefined;
+  if (existing?._videoEl) return existing;
+
+  const source = canvas
+    .getObjects()
+    .find((object) => (object as VideoFabricObject).name === sourceObjectId) as
+    | VideoFabricObject
+    | undefined;
+  const sourceVideo = source?._videoEl;
+  if (!source || !sourceVideo) return null;
+
+  const src = sourceVideo.currentSrc || sourceVideo.src;
+  if (!src) return null;
+
+  const videoEl = document.createElement("video");
+  videoEl.muted = sourceVideo.muted;
+  videoEl.volume = sourceVideo.volume;
+  videoEl.playbackRate = sourceVideo.playbackRate;
+  videoEl.playsInline = true;
+  videoEl.preload = "auto";
+  videoEl.disablePictureInPicture = true;
+  if (videoNeedsCrossOrigin(src)) {
+    videoEl.crossOrigin = "anonymous";
+  }
+  videoEl.src = src;
+
+  try {
+    await waitForClonedVideoMetadata(videoEl);
+  } catch {
+    videoEl.pause();
+    videoEl.removeAttribute("src");
+    videoEl.load();
+    return null;
+  }
+
+  const vWidth = Math.max(
+    1,
+    videoEl.videoWidth || Number(source.width || 1),
+  );
+  const vHeight = Math.max(
+    1,
+    videoEl.videoHeight || Number(source.height || 1),
+  );
+  const transparentPixel = document.createElement("canvas");
+  transparentPixel.width = 1;
+  transparentPixel.height = 1;
+
+  const fabricVideo = new FabricImage(transparentPixel, {
+    name: targetObjectId,
+    width: vWidth,
+    height: vHeight,
+    originX: source.originX,
+    originY: source.originY,
+    left: source.left,
+    top: source.top,
+    scaleX: source.scaleX,
+    scaleY: source.scaleY,
+    angle: source.angle,
+    objectCaching: false,
+    visible: false,
+    opacity: 0,
+    selectable: source.selectable,
+    evented: source.evented,
+    hasControls: source.hasControls,
+    lockMovementX: source.lockMovementX,
+    lockMovementY: source.lockMovementY,
+    lockScalingX: source.lockScalingX,
+    lockScalingY: source.lockScalingY,
+  }) as VideoFabricObject;
+
+  if (source._userTransform) {
+    fabricVideo._userTransform = true;
+  }
+  fabricVideo._sourceMediaWidth = source._sourceMediaWidth;
+  fabricVideo._sourceMediaHeight = source._sourceMediaHeight;
+  fabricVideo._disposeVideo = () => {
+    videoEl.pause();
+    videoEl.removeAttribute("src");
+    videoEl.load();
+  };
+
+  canvas.add(fabricVideo);
+  attachVideoOverlay(canvas, fabricVideo, videoEl);
+  setVideoOverlayVisibility(fabricVideo, false);
+  syncVideoOverlay(fabricVideo);
+
+  return fabricVideo;
 }

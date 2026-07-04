@@ -28,6 +28,7 @@ import {
   addMediaFromUrl,
   addTextToCanvas,
   applyPersistedLayerState,
+  ensureMissingVideoFabricObjects,
   PHOTO_DRAG_MIME_TYPE,
   persistOverlayObjectState,
   resolveCanvasPlacementFromEvent,
@@ -41,7 +42,9 @@ import {
   attachVideoOverlay,
   fitFabricCanvasToContainer,
   fitVideoObjectToCanvas,
+  getProjectCanvasSizeForVideo,
   refitAllVideosToProjectCanvas,
+  shouldMatchCanvasToVideo,
   setVideoOverlayOpacity,
   setVideoOverlayVisibility,
   syncVideoOverlays,
@@ -94,6 +97,7 @@ export function VideoPlayerCanvas() {
     width: projectSize.width,
     height: projectSize.height,
   });
+  const [visualLayerEpoch, setVisualLayerEpoch] = useState(0);
 
   const {
     videoUrl,
@@ -362,7 +366,18 @@ export function VideoPlayerCanvas() {
     let cancelled = false;
 
     const restoreVisualLayers = async () => {
-      for (const layer of getLayers()) {
+      const projectWidth = Math.max(1, Number(globalCanvas.width || 1280));
+      const projectHeight = Math.max(1, Number(globalCanvas.height || 720));
+      const layers = getLayers();
+
+      await ensureMissingVideoFabricObjects(
+        canvas,
+        layers,
+        projectWidth,
+        projectHeight,
+      );
+
+      for (const layer of layers) {
         if (
           cancelled ||
           !layer.objectId ||
@@ -393,7 +408,8 @@ export function VideoPlayerCanvas() {
 
         if (
           !layer.data?.url ||
-          !["image", "video", "sticker"].includes(layer.type)
+          !["image", "video", "sticker"].includes(layer.type) ||
+          layer.type === "video"
         ) {
           continue;
         }
@@ -401,7 +417,7 @@ export function VideoPlayerCanvas() {
         const objectId = await addMediaFromUrl(
           layer.data.url,
           useEditorStore.getState(),
-          layer.type === "video" ? "video" : "image",
+          "image",
           true,
           layer.objectId,
           layer.data.name || layer.name,
@@ -411,21 +427,10 @@ export function VideoPlayerCanvas() {
           .getObjects()
           .find((candidate: any) => candidate.name === objectId);
         if (object) {
-          if (layer.type === "video") {
-            fitVideoObjectToCanvas(
-              object,
-              Math.max(1, Number(globalCanvas.width || 1280)),
-              Math.max(1, Number(globalCanvas.height || 720)),
-              Math.max(1, Number(layer.data?.width || 1280)),
-              Math.max(1, Number(layer.data?.height || 720)),
-            );
-            applyFabricTransformControls(object);
-          } else {
-            applyPersistedLayerState(object, layer);
-            applyVideoOverlayControls(object);
-            attachMediaOverlay(canvas, object as any, layer);
-            (object as any)._syncMediaOverlay?.();
-          }
+          applyPersistedLayerState(object, layer);
+          applyVideoOverlayControls(object);
+          attachMediaOverlay(canvas, object as any, layer);
+          (object as any)._syncMediaOverlay?.();
         }
       }
       fitFabricCanvasToContainer(
@@ -440,6 +445,9 @@ export function VideoPlayerCanvas() {
       syncVideoOverlays(canvas);
       syncFabricLayerStack(canvas, getLayers());
       canvas.requestRenderAll();
+      if (!cancelled) {
+        setVisualLayerEpoch((epoch) => epoch + 1);
+      }
     };
 
     void restoreVisualLayers();
@@ -453,6 +461,45 @@ export function VideoPlayerCanvas() {
     if (!canvas) return;
     syncFabricLayerStack(canvas, getLayers());
   }, [getLayers, globalCanvas.pages, globalCanvas.activePageId]);
+
+  useEffect(() => {
+    const layers = getLayers();
+    const videoLayers = layers.filter(
+      (layer) => layer.type === "video" && layer.visible !== false,
+    );
+    if (videoLayers.length !== 1) return;
+
+    const layer = videoLayers[0];
+    const videoWidth = Number(layer.data?.width || 0);
+    const videoHeight = Number(layer.data?.height || 0);
+    if (videoWidth <= 0 || videoHeight <= 0) return;
+
+    const canvasWidth = Math.max(1, Number(globalCanvas.width || 1280));
+    const canvasHeight = Math.max(1, Number(globalCanvas.height || 720));
+    const isPortraitVideo = videoHeight > videoWidth;
+    const isLandscapeCanvas = canvasWidth > canvasHeight;
+
+    if (
+      isPortraitVideo &&
+      isLandscapeCanvas &&
+      shouldMatchCanvasToVideo(
+        canvasWidth,
+        canvasHeight,
+        videoWidth,
+        videoHeight,
+      )
+    ) {
+      useEditorStore
+        .getState()
+        .setCanvas(getProjectCanvasSizeForVideo(videoWidth, videoHeight));
+    }
+  }, [
+    getLayers,
+    globalCanvas.activePageId,
+    globalCanvas.height,
+    globalCanvas.pages,
+    globalCanvas.width,
+  ]);
 
   useEffect(() => {
     const width = Math.max(1, Number(globalCanvas.width || 1280));
@@ -629,6 +676,14 @@ export function VideoPlayerCanvas() {
         videoEl: HTMLVideoElement;
         frame: (typeof frames)[number];
       }> = [];
+      const activeLayerIds = new Set(
+        frames.map((frame) => frame.scene.layer.id),
+      );
+      const activeObjectIds = new Set(
+        frames
+          .map((frame) => frame.scene.layer.objectId)
+          .filter((objectId): objectId is string => Boolean(objectId)),
+      );
 
       layers.forEach((layer) => {
         if (layer.type !== "video" || !layer.objectId) return;
@@ -639,11 +694,13 @@ export function VideoPlayerCanvas() {
         const videoEl = object?._videoEl as HTMLVideoElement | undefined;
         if (!object || !videoEl) return;
 
+        // Match by layer id — split clips can share a source URL but must not
+        // steal each other's timeline / mediaStart.
         const frame = frames.find(
-          (candidate) => candidate.scene.layer.objectId === layer.objectId,
+          (candidate) => candidate.scene.layer.id === layer.id,
         );
         const scene = composition.scenes.find(
-          (candidate) => candidate.layer.objectId === layer.objectId,
+          (candidate) => candidate.layer.id === layer.id,
         );
         const layerStart = scene?.timelineStart ?? Number(layer.startTime || 0);
         const layerEnd =
@@ -651,9 +708,8 @@ export function VideoPlayerCanvas() {
           layerStart + Number(layer.duration || 0);
         const shouldShow =
           layer.visible !== false &&
-          Boolean(frame) &&
-          currentTime >= layerStart &&
-          currentTime < layerEnd;
+          activeLayerIds.has(layer.id) &&
+          Boolean(frame);
 
         if (object._videoOverlayElement !== videoEl) {
           attachVideoOverlay(canvas, object, videoEl);
@@ -682,8 +738,12 @@ export function VideoPlayerCanvas() {
             pendingPresentations.push({ videoEl, frame });
           }
         } else {
-          setVideoOverlayVisibility(object, false);
-          if (!videoEl.paused) videoEl.pause();
+          // Legacy splits may share one fabric object — only hide when no
+          // active clip still needs this video element.
+          if (!activeObjectIds.has(layer.objectId)) {
+            setVideoOverlayVisibility(object, false);
+            if (!videoEl.paused) videoEl.pause();
+          }
           return;
         }
 
@@ -693,7 +753,8 @@ export function VideoPlayerCanvas() {
         videoEl.volume = volume;
         videoEl.playbackRate = playbackRate;
 
-        const mediaStart = Number(layer.mediaStart || 0);
+        const mediaStart =
+          Number(scene?.sourceStart ?? layer.mediaStart ?? 0);
         const targetTime = mediaStart + (currentTime - layerStart);
         if (Math.abs(videoEl.currentTime - targetTime) > 0.12) {
           try {
@@ -758,6 +819,7 @@ export function VideoPlayerCanvas() {
     videoUrl,
     volume,
     activeFilterCss,
+    visualLayerEpoch,
   ]);
 
   useEffect(() => {

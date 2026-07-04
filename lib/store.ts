@@ -2,9 +2,13 @@ import { create } from 'zustand'
 import type { Canvas } from 'fabric'
 import {
   buildVideoComposition,
+  clampMidClipTransition,
+  getMidClipTransitions,
   getSceneOverlapDuration,
   reorderVideoScenes,
+  splitMidClipTransitions,
   synchronizeVideoSceneLayers,
+  type MidClipTransition,
   type SceneTransition,
 } from './video-composition'
 import {
@@ -232,6 +236,16 @@ export interface EditorState {
     leftLayerId: string,
     transition: SceneTransition,
   ) => void
+  addMidClipTransition: (
+    layerId: string,
+    transition: Omit<MidClipTransition, 'id'>,
+  ) => string | null
+  updateMidClipTransition: (
+    layerId: string,
+    transitionId: string,
+    updates: Partial<Omit<MidClipTransition, 'id'>>,
+  ) => void
+  removeMidClipTransition: (layerId: string, transitionId: string) => void
   getLayers: () => Layer[]
   getSelectedLayer: () => Layer | undefined
 
@@ -1089,24 +1103,41 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       const part1Duration = time - start
       const part2Duration = (start + dur) - time
       const originalMediaStart = layer.mediaStart || 0
+      // Each clip needs its own fabric/video element so preview can seek
+      // independently (shared objectId made Part 2 stay black).
+      const part2ObjectId = layer.objectId
+        ? `${layer.objectId}_part_${Date.now()}`
+        : undefined
 
+      const existingKeyframes = getMidClipTransitions(layer)
       const part1 = { ...layer, duration: part1Duration }
-      const part2 = { 
-        ...layer, 
+      const part2 = {
+        ...layer,
         id: `layer-${Date.now()}-${Math.random()}`,
-        name: `${layer.name} (Part 2)`, 
-        startTime: time, 
+        objectId: part2ObjectId,
+        name: `${layer.name} (Part 2)`,
+        startTime: time,
         duration: part2Duration,
         mediaStart: originalMediaStart + part1Duration,
         data: {
           ...(layer.data || {}),
           transitionBefore: { type: 'none', duration: 0 },
           sceneOrder: Number(layer.data?.sceneOrder || 0) + 0.5,
+          transitionKeyframes: splitMidClipTransitions(
+            existingKeyframes,
+            part1Duration,
+            'right',
+          ),
         },
       }
       part1.data = {
         ...(part1.data || {}),
         transitionAfter: { type: 'none', duration: 0 },
+        transitionKeyframes: splitMidClipTransitions(
+          existingKeyframes,
+          part1Duration,
+          'left',
+        ),
       }
 
       const newLayers = [...activePage.layers]
@@ -1358,6 +1389,143 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       },
     }))
     get().recalculateTotalDuration()
+  },
+
+  addMidClipTransition: (layerId, transition) => {
+    const transitionId = `mid_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    let created = false
+
+    set((state) => ({
+      canvas: {
+        ...state.canvas,
+        pages: state.canvas.pages.map((page) => {
+          if (page.id !== state.canvas.activePageId) return page
+
+          const composition = buildVideoComposition(page.layers)
+          const scene = composition.scenes.find(
+            (candidate) => candidate.layer.id === layerId,
+          )
+          if (!scene) return page
+
+          const clamped = clampMidClipTransition(
+            transition,
+            scene.duration,
+          )
+          if (clamped.type === 'none' || clamped.duration <= 0) return page
+
+          const updatedLayers = page.layers.map((layer) => {
+            if (layer.id !== layerId) return layer
+            const keyframes = getMidClipTransitions(layer)
+            created = true
+            return {
+              ...layer,
+              data: {
+                ...(layer.data || {}),
+                transitionKeyframes: [
+                  ...keyframes,
+                  { id: transitionId, ...clamped },
+                ],
+              },
+            }
+          })
+
+          return {
+            ...page,
+            layers: synchronizeVideoSceneLayers(updatedLayers),
+          }
+        }),
+      },
+    }))
+
+    return created ? transitionId : null
+  },
+
+  updateMidClipTransition: (layerId, transitionId, updates) => {
+    set((state) => ({
+      canvas: {
+        ...state.canvas,
+        pages: state.canvas.pages.map((page) => {
+          if (page.id !== state.canvas.activePageId) return page
+
+          const composition = buildVideoComposition(page.layers)
+          const scene = composition.scenes.find(
+            (candidate) => candidate.layer.id === layerId,
+          )
+          if (!scene) return page
+
+          const updatedLayers = page.layers.map((layer) => {
+            if (layer.id !== layerId) return layer
+            const keyframes = getMidClipTransitions(layer)
+            const index = keyframes.findIndex((item) => item.id === transitionId)
+            if (index === -1) return layer
+
+            const next = clampMidClipTransition(
+              { ...keyframes[index], ...updates },
+              scene.duration,
+            )
+            if (next.type === 'none' || next.duration <= 0) {
+              return {
+                ...layer,
+                data: {
+                  ...(layer.data || {}),
+                  transitionKeyframes: keyframes.filter(
+                    (item) => item.id !== transitionId,
+                  ),
+                },
+              }
+            }
+
+            const transitionKeyframes = [...keyframes]
+            transitionKeyframes[index] = { id: transitionId, ...next }
+
+            return {
+              ...layer,
+              data: {
+                ...(layer.data || {}),
+                transitionKeyframes,
+              },
+            }
+          })
+
+          return {
+            ...page,
+            layers: synchronizeVideoSceneLayers(updatedLayers),
+          }
+        }),
+      },
+    }))
+  },
+
+  removeMidClipTransition: (layerId, transitionId) => {
+    set((state) => ({
+      canvas: {
+        ...state.canvas,
+        pages: state.canvas.pages.map((page) => {
+          if (page.id !== state.canvas.activePageId) return page
+
+          const updatedLayers = page.layers.map((layer) => {
+            if (layer.id !== layerId) return layer
+            const keyframes = getMidClipTransitions(layer)
+            if (!keyframes.some((item) => item.id === transitionId)) return layer
+
+            return {
+              ...layer,
+              data: {
+                ...(layer.data || {}),
+                transitionKeyframes: keyframes.filter(
+                  (item) => item.id !== transitionId,
+                ),
+              },
+            }
+          })
+
+          return {
+            ...page,
+            layers: synchronizeVideoSceneLayers(updatedLayers),
+          }
+        }),
+      },
+    }))
   },
 
   getLayers: () => {

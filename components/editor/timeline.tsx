@@ -200,6 +200,7 @@ export function Timeline() {
     selectLayer,
     deleteLayer,
     addLayer,
+    addMidClipTransition,
   } = useEditorStore();
   const layers = getLayers();
   const composition = buildVideoComposition(layers);
@@ -210,6 +211,9 @@ export function Timeline() {
   const canMergeSelected = Boolean(
     selectedLayerId && findMergeableMediaPair(layers, selectedLayerId),
   );
+  const selectedVideoScene = selectedLayerId
+    ? composition.scenes.find((scene) => scene.layer.id === selectedLayerId)
+    : undefined;
 
   const [zoom, setZoom] = useState(100);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(
@@ -230,8 +234,9 @@ export function Timeline() {
     originalMediaStart: number;
     originalRowHeight?: number;
     segmentKind?: TimelineSegment["kind"];
-    transitionSide?: "before" | "after" | "junction";
+    transitionSide?: "before" | "after" | "junction" | "mid";
     transitionType?: string;
+    transitionId?: string;
     lastY?: number;
   } | null>(null);
 
@@ -249,6 +254,11 @@ export function Timeline() {
   const videoFilters = videoState.filters;
   const effectStartTime = videoState.effectStartTime ?? 0;
   const effectEndTime = videoState.effectEndTime ?? 0;
+  const canAddMidTransition = Boolean(
+    selectedVideoScene &&
+      currentTime >= selectedVideoScene.timelineStart &&
+      currentTime < selectedVideoScene.timelineEnd,
+  );
 
   const pendingSceneReorderRef = useRef<{
     layerId: string;
@@ -338,6 +348,29 @@ export function Timeline() {
     }
 
     if (drag.type === "move") {
+      if (
+        drag.segmentKind === "transition" &&
+        drag.transitionSide === "mid" &&
+        drag.transitionId
+      ) {
+        const scene = currentComposition.scenes.find(
+          (item) => item.layer.id === drag.layerId,
+        );
+        if (!scene) return;
+
+        const clipStart = scene.timelineStart;
+        const clipEnd = scene.timelineEnd;
+        let newStart = drag.originalStart + deltaTime;
+        newStart = Math.max(
+          clipStart,
+          Math.min(newStart, clipEnd - drag.originalDuration),
+        );
+        store.updateMidClipTransition(drag.layerId, drag.transitionId, {
+          offset: newStart - clipStart,
+        });
+        return;
+      }
+
       const layer = currentLayers.find((item) => item.id === drag.layerId);
       if (drag.layerId === EFFECT_RANGE_LAYER_ID) {
         let newStart = drag.originalStart + deltaTime;
@@ -409,6 +442,44 @@ export function Timeline() {
     if (drag.segmentKind === "transition" && drag.transitionSide) {
       const layer = currentLayers.find((item) => item.id === drag.layerId);
       if (!layer) return;
+
+      if (drag.transitionSide === "mid" && drag.transitionId) {
+        const scene = currentComposition.scenes.find(
+          (item) => item.layer.id === drag.layerId,
+        );
+        if (!scene) return;
+
+        const clipStart = scene.timelineStart;
+        const clipDuration = scene.duration;
+        const currentOffset = drag.originalStart - clipStart;
+
+        if (drag.type === "resize-start") {
+          const fixedEnd = drag.originalStart + drag.originalDuration;
+          let newStart = drag.originalStart + deltaTime;
+          newStart = Math.max(
+            clipStart,
+            Math.min(newStart, fixedEnd - 0.1),
+          );
+          store.updateMidClipTransition(drag.layerId, drag.transitionId, {
+            offset: newStart - clipStart,
+            duration: Math.max(0.1, fixedEnd - newStart),
+          });
+          return;
+        }
+
+        let newDuration =
+          drag.type === "resize-end"
+            ? drag.originalDuration + deltaTime
+            : drag.originalDuration;
+        newDuration = Math.max(
+          0.1,
+          Math.min(newDuration, clipDuration - currentOffset),
+        );
+        store.updateMidClipTransition(drag.layerId, drag.transitionId, {
+          duration: newDuration,
+        });
+        return;
+      }
 
       const maxDuration = Math.max(
         0.1,
@@ -717,6 +788,27 @@ export function Timeline() {
     if (segment.kind === "transition" && segment.layerId) {
       event.stopPropagation();
       selectLayer(segment.layerId);
+      if (segment.transitionSide === "mid" && segment.draggable) {
+        beginDrag(
+          {
+            type: "move",
+            layerId: segment.layerId,
+            startX: event.clientX,
+            startY: event.clientY,
+            trackWidth: 1,
+            originalStart: segment.startTime,
+            originalDuration: segment.duration,
+            originalTrack: 0,
+            originalMediaStart: 0,
+            segmentKind: "transition",
+            transitionSide: segment.transitionSide,
+            transitionType: segment.transitionType,
+            transitionId: segment.transitionId,
+          },
+          event.currentTarget as HTMLElement,
+          event.pointerId,
+        );
+      }
       return;
     }
 
@@ -794,6 +886,7 @@ export function Timeline() {
           segmentKind: "transition",
           transitionSide: segment.transitionSide,
           transitionType: segment.transitionType,
+          transitionId: segment.transitionId,
         },
         event.currentTarget as HTMLElement,
         event.pointerId,
@@ -922,6 +1015,32 @@ export function Timeline() {
             title="Split Selected Layer (S)"
           >
             <Scissors className="w-5 h-5" />
+          </button>
+          <button
+            onClick={() => {
+              if (!selectedVideoScene) return;
+              const offset = currentTime - selectedVideoScene.timelineStart;
+              const transitionId = addMidClipTransition(selectedVideoScene.layer.id, {
+                offset,
+                duration: 0.5,
+                type: "dissolve",
+              });
+              if (transitionId) {
+                toast.success("Transition added at playhead");
+              } else {
+                toast.error("Could not add transition here");
+              }
+            }}
+            disabled={!canAddMidTransition}
+            className={cn(
+              "p-2 rounded-lg transition-all",
+              canAddMidTransition
+                ? "hover:bg-gray-200 text-gray-700 hover:text-violet-600"
+                : "text-gray-300 cursor-not-allowed",
+            )}
+            title="Add Transition at Playhead"
+          >
+            <Sparkles className="w-5 h-5" />
           </button>
           <button
             onClick={() => {
