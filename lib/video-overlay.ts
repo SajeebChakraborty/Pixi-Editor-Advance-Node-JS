@@ -15,6 +15,21 @@ export type VideoFabricObject = FabricObject & {
   _sourceMediaHeight?: number;
   _fitMediaKey?: string;
   _userTransform?: boolean;
+  _presentationFrame?: VideoPresentationFrame;
+  _presentationFilterCss?: string;
+};
+
+export type VideoPresentationFrame = {
+  opacity: number;
+  translateXPercent: number;
+  translateYPercent: number;
+  scale: number;
+  clipInset: {
+    top: number;
+    right: number;
+    bottom: number;
+    left: number;
+  };
 };
 
 const OVERLAY_ROOT_ATTRIBUTE = "data-video-overlay-root";
@@ -337,6 +352,54 @@ function updateNativeVideoPlaceholder(object: VideoFabricObject) {
   object._nativeVideoPlaceholder = true;
 }
 
+function applyPresentationToVideoElement(
+  video: HTMLVideoElement,
+  presentation: VideoPresentationFrame,
+  layoutAngle: number,
+  videoOpacity: number,
+  filterCss?: string,
+) {
+  const hasMotion =
+    presentation.translateXPercent !== 0 ||
+    presentation.translateYPercent !== 0 ||
+    presentation.scale !== 1;
+  const layoutTransform = layoutAngle ? `rotate(${layoutAngle}deg)` : "";
+  const motionTransform = hasMotion
+    ? `translate(${presentation.translateXPercent}%, ${presentation.translateYPercent}%) scale(${presentation.scale})`
+    : presentation.scale !== 1
+      ? `scale(${presentation.scale})`
+      : "";
+  video.style.transform =
+    [motionTransform, layoutTransform].filter(Boolean).join(" ") || "none";
+  video.style.transformOrigin = "center center";
+
+  const { top, right, bottom, left } = presentation.clipInset;
+  video.style.clipPath =
+    top || right || bottom || left
+      ? `inset(${top}% ${right}% ${bottom}% ${left}%)`
+      : "none";
+
+  video.style.opacity = String(
+    Math.min(
+      1,
+      Math.max(0, presentation.opacity * Math.min(1, Math.max(0, videoOpacity))),
+    ),
+  );
+  if (filterCss) {
+    video.style.filter = filterCss;
+  }
+}
+
+export function setVideoPresentationFrame(
+  object: VideoFabricObject,
+  frame: VideoPresentationFrame | null,
+  filterCss = "",
+) {
+  object._presentationFrame = frame || undefined;
+  object._presentationFilterCss = frame ? filterCss : undefined;
+  syncVideoOverlay(object);
+}
+
 export function syncVideoOverlay(object: VideoFabricObject) {
   const canvas = object.canvas;
   const video = object._videoOverlayElement;
@@ -363,20 +426,44 @@ export function syncVideoOverlay(object: VideoFabricObject) {
     video.style.objectFit = "fill";
   }
 
-  video.style.clipPath = "none";
-  video.style.transform = object.angle
-    ? `rotate(${object.angle}deg)`
-    : "none";
-  video.style.transformOrigin = "center center";
+  const presentation = object._presentationFrame;
+  if (presentation) {
+    applyPresentationToVideoElement(
+      video,
+      presentation,
+      Number(object.angle || 0),
+      Number(object._videoOpacity ?? 1),
+      object._presentationFilterCss,
+    );
+  } else {
+    video.style.clipPath = "none";
+    video.style.transform = object.angle
+      ? `rotate(${object.angle}deg)`
+      : "none";
+    video.style.transformOrigin = "center center";
+    video.style.opacity = `${Math.min(
+      1,
+      Math.max(0, Number(object._videoOpacity ?? 1)),
+    )}`;
+  }
+
   video.style.zIndex = `${Math.max(0, objectIndex)}`;
-  video.style.opacity = `${Math.min(
-    1,
-    Math.max(0, Number(object._videoOpacity ?? 1)),
-  )}`;
   video.style.display =
     object._videoOverlayVisible === false || object.visible === false
       ? "none"
       : "block";
+
+  const needsClip =
+    Boolean(presentation) &&
+    (presentation!.translateXPercent !== 0 ||
+      presentation!.translateYPercent !== 0 ||
+      presentation!.opacity < 0.999 ||
+      presentation!.scale !== 1 ||
+      presentation!.clipInset.top > 0 ||
+      presentation!.clipInset.right > 0 ||
+      presentation!.clipInset.bottom > 0 ||
+      presentation!.clipInset.left > 0);
+  root.style.overflow = needsClip ? "hidden" : "visible";
 }
 
 export function attachVideoOverlay(

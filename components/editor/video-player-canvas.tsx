@@ -36,7 +36,6 @@ import {
 import {
   buildVideoFilterCss,
   isEffectActiveAtTime,
-  applyResolvedFramePresentation,
 } from "@/lib/video-filters";
 import {
   attachVideoOverlay,
@@ -673,7 +672,7 @@ export function VideoPlayerCanvas() {
       );
 
       const pendingPresentations: Array<{
-        videoEl: HTMLVideoElement;
+        object: any;
         frame: (typeof frames)[number];
       }> = [];
       const activeLayerIds = new Set(
@@ -730,14 +729,18 @@ export function VideoPlayerCanvas() {
 
         if (shouldShow && frame) {
           setVideoOverlayVisibility(object, true);
-          videoEl.style.filter = activeFilterCss;
-
-          if (object._userTransform) {
-            setVideoOverlayOpacity(object, frame.opacity ?? 1);
-          } else {
-            pendingPresentations.push({ videoEl, frame });
-          }
+          object._presentationFrame = {
+            opacity: frame.opacity,
+            translateXPercent: frame.translateXPercent,
+            translateYPercent: frame.translateYPercent,
+            scale: frame.scale,
+            clipInset: frame.clipInset,
+          };
+          object._presentationFilterCss = activeFilterCss;
+          pendingPresentations.push({ object, frame });
         } else {
+          object._presentationFrame = undefined;
+          object._presentationFilterCss = undefined;
           // Legacy splits may share one fabric object — only hide when no
           // active clip still needs this video element.
           if (!activeObjectIds.has(layer.objectId)) {
@@ -772,10 +775,13 @@ export function VideoPlayerCanvas() {
       });
 
       syncFabricLayerStack(canvas, getLayers());
+      syncVideoOverlays(canvas);
 
-      pendingPresentations.forEach(({ videoEl, frame }) => {
-        applyResolvedFramePresentation(videoEl, frame, activeFilterCss);
-        videoEl.style.zIndex = String(10 + frame.scene.order);
+      pendingPresentations.forEach(({ object, frame }) => {
+        const videoEl = object._videoEl as HTMLVideoElement | undefined;
+        if (videoEl) {
+          videoEl.style.zIndex = String(10 + frame.scene.order);
+        }
       });
 
       canvas.requestRenderAll();

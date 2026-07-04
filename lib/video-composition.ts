@@ -493,10 +493,10 @@ export const resolveCompositionFrame = (
           sceneElapsed - midStart,
           midTransition.duration,
         );
-        style = mergeFrameStyles(
-          style,
-          applyEnterTransition(midTransition.type, progress),
-        );
+        // Replace the frame during mid-clip transitions so the clip does not
+        // flash full-frame before the animation starts.
+        style = applyEnterTransition(midTransition.type, progress);
+        break;
       }
     }
 
