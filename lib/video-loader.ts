@@ -36,18 +36,39 @@ export const getVideoPlaybackCandidates = (url: string) => {
 
 export const verifyEditorAssetAvailable = async (
   assetUrl: string,
-  maxAttempts = 6,
+  options?: {
+    maxAttempts?: number;
+    fileSize?: number;
+  },
 ) => {
   if (!assetUrl.startsWith("/api/assets/file")) return;
 
+  const fileSize = Math.max(0, Number(options?.fileSize || 0));
+  const maxAttempts =
+    options?.maxAttempts ??
+    (fileSize > 80 * 1024 * 1024
+      ? 18
+      : fileSize > 20 * 1024 * 1024
+        ? 14
+        : 10);
+
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
-      const response = await fetch(assetUrl, { method: "HEAD", cache: "no-store" });
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => controller.abort(), 12_000);
+      const response = await fetch(assetUrl, {
+        method: "HEAD",
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      window.clearTimeout(timeoutId);
       if (response.ok) return;
     } catch {
       // Retry while storage catches up.
     }
-    await new Promise((resolve) => setTimeout(resolve, 400 * (attempt + 1)));
+    await new Promise((resolve) =>
+      setTimeout(resolve, Math.min(5000, 350 + attempt * 450)),
+    );
   }
 
   throw new Error(

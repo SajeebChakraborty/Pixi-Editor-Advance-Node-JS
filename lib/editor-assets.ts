@@ -2,6 +2,11 @@ import type { Asset } from "./store";
 import { supabase } from "./supabase";
 import { verifyEditorAssetAvailable } from "./video-loader";
 
+const PRESIGN_TIMEOUT_MS = 30_000;
+const MIN_UPLOAD_TIMEOUT_MS = 120_000;
+const MAX_UPLOAD_TIMEOUT_MS = 15 * 60 * 1000;
+const MAX_DIRECT_UPLOAD_ATTEMPTS = 3;
+
 const parseUploadResponse = async (response: Response) => {
   const contentType = response.headers.get("content-type") || "";
   if (contentType.includes("application/json")) {
@@ -18,42 +23,169 @@ const parseUploadResponse = async (response: Response) => {
   };
 };
 
-const uploadFileToStorage = async (file: File, type: Asset["type"]) => {
-  const presignResponse = await fetch("/api/assets/presign", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      fileName: file.name,
-      contentType: file.type,
-      size: file.size,
-      type,
-    }),
+const computeUploadTimeoutMs = (fileSize: number) => {
+  const scaled = Math.ceil(fileSize / (512 * 1024)) * 1000;
+  return Math.min(
+    MAX_UPLOAD_TIMEOUT_MS,
+    Math.max(MIN_UPLOAD_TIMEOUT_MS, scaled),
+  );
+};
+
+const fetchWithTimeout = async (
+  input: RequestInfo | URL,
+  init: RequestInit,
+  timeoutMs: number,
+) => {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: controller.signal,
+      cache: "no-store",
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error(
+        "Upload request timed out. Please check your connection and try again.",
+      );
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+};
+
+const putFileToPresignedUrl = (
+  uploadUrl: string,
+  file: File,
+  contentType: string,
+  timeoutMs: number,
+) =>
+  new Promise<void>((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let settled = false;
+
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve();
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      xhr.abort();
+      finish(
+        new Error(
+          "Video upload timed out. Try a smaller file or a more stable connection.",
+        ),
+      );
+    }, timeoutMs);
+
+    xhr.open("PUT", uploadUrl);
+    xhr.setRequestHeader("Content-Type", contentType);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        finish();
+        return;
+      }
+      finish(
+        new Error(
+          xhr.responseText?.trim() ||
+            `Storage upload failed with status ${xhr.status}`,
+        ),
+      );
+    };
+    xhr.onerror = () => {
+      finish(
+        new Error(
+          "Network error while uploading to storage. Check your connection and try again.",
+        ),
+      );
+    };
+    xhr.onabort = () => {
+      if (!settled) {
+        finish(new Error("Video upload was interrupted."));
+      }
+    };
+    xhr.send(file);
   });
+
+const requestPresignedUpload = async (file: File, type: Asset["type"]) => {
+  const presignResponse = await fetchWithTimeout(
+    "/api/assets/presign",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        fileName: file.name,
+        contentType: file.type,
+        size: file.size,
+        type,
+      }),
+    },
+    PRESIGN_TIMEOUT_MS,
+  );
   const presignResult = await parseUploadResponse(presignResponse);
   if (!presignResponse.ok || !presignResult?.uploadUrl) {
     throw new Error(presignResult?.error || "Could not prepare upload");
   }
 
-  const uploadResponse = await fetch(presignResult.uploadUrl, {
-    method: "PUT",
-    headers: {
-      "Content-Type": presignResult.contentType || file.type,
-    },
-    body: file,
-  });
+  return presignResult as {
+    success: true;
+    uploadUrl: string;
+    url: string;
+    key: string;
+    contentType: string;
+  };
+};
 
-  if (!uploadResponse.ok) {
-    const errorText = await uploadResponse.text();
-    throw new Error(
-      errorText.trim() ||
-        `Storage upload failed with status ${uploadResponse.status}`,
-    );
+const uploadFileToStorage = async (file: File, type: Asset["type"]) => {
+  const uploadTimeoutMs = computeUploadTimeoutMs(file.size);
+  let presignResult = await requestPresignedUpload(file, type);
+
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < MAX_DIRECT_UPLOAD_ATTEMPTS; attempt += 1) {
+    if (attempt > 0) {
+      presignResult = await requestPresignedUpload(file, type);
+    }
+
+    const contentType =
+      presignResult.contentType || file.type || "application/octet-stream";
+
+    try {
+      await putFileToPresignedUrl(
+        presignResult.uploadUrl,
+        file,
+        contentType,
+        uploadTimeoutMs,
+      );
+      lastError = null;
+      break;
+    } catch (error) {
+      lastError =
+        error instanceof Error
+          ? error
+          : new Error("Storage upload failed");
+      if (attempt >= MAX_DIRECT_UPLOAD_ATTEMPTS - 1) {
+        throw lastError;
+      }
+    }
+  }
+
+  if (lastError) {
+    throw lastError;
   }
 
   if (type === "video") {
-    await verifyEditorAssetAvailable(presignResult.url);
+    await verifyEditorAssetAvailable(presignResult.url, { fileSize: file.size });
   }
 
   return presignResult as {
@@ -72,9 +204,21 @@ export const uploadEditorAsset = async (
 ) => {
   const result = await uploadFileToStorage(file, type);
 
-  const { data: authData } = await supabase.auth.getUser();
+  let authUser: { id: string } | null = null;
+  try {
+    const authResult = await Promise.race([
+      supabase.auth.getUser(),
+      new Promise<{ data: { user: null } }>((resolve) =>
+        window.setTimeout(() => resolve({ data: { user: null } }), 8000),
+      ),
+    ]);
+    authUser = authResult.data.user;
+  } catch {
+    // Asset upload already succeeded; do not block the editor on auth lookup.
+  }
+
   let asset: unknown = null;
-  if (authData.user) {
+  if (authUser) {
     const { data, error } = await supabase
       .from("assets")
       .insert({
@@ -84,7 +228,7 @@ export const uploadEditorAsset = async (
         url: result.url,
         file_size: file.size,
         is_public: false,
-        user_id: authData.user.id,
+        user_id: authUser.id,
         project_id: projectId || null,
       })
       .select()

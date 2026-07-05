@@ -113,7 +113,7 @@ export class S3Storage {
       });
 
       return await getSignedUrl(s3Client as unknown as PresignClient, command, {
-        expiresIn: 60 * 5,
+        expiresIn: 60 * 15,
       });
     } catch (error) {
       console.error("[S3] Presign failed:", formatStorageError(error));
