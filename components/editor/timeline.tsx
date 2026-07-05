@@ -201,6 +201,9 @@ export function Timeline() {
     deleteLayer,
     addLayer,
     addMidClipTransition,
+    removeMidClipTransition,
+    setVideoSceneTransition,
+    setJunctionTransition,
   } = useEditorStore();
   const layers = getLayers();
   const composition = buildVideoComposition(layers);
@@ -656,6 +659,42 @@ export function Timeline() {
     effectEndTime,
   });
 
+  const selectedSegment = selectedSegmentId
+    ? timelineRows
+        .flatMap((row) => row.segments)
+        .find((segment) => segment.id === selectedSegmentId)
+    : undefined;
+  const isTransitionSelected = selectedSegment?.kind === "transition";
+
+  const handleDeleteSelection = () => {
+    if (selectedSegment?.kind === "transition" && selectedSegment.layerId) {
+      if (selectedSegment.transitionSide === "mid" && selectedSegment.transitionId) {
+        removeMidClipTransition(
+          selectedSegment.layerId,
+          selectedSegment.transitionId,
+        );
+      } else if (selectedSegment.transitionSide === "before") {
+        setVideoSceneTransition(selectedSegment.layerId, "before", {
+          type: "none",
+          duration: 0,
+        });
+      } else {
+        setJunctionTransition(selectedSegment.layerId, {
+          type: "none",
+          duration: 0,
+        });
+      }
+      setSelectedSegmentId(null);
+      toast.success("Transition removed");
+      return;
+    }
+
+    if (selectedLayerId) {
+      deleteLayer(selectedLayerId);
+      setSelectedSegmentId(null);
+    }
+  };
+
   useEffect(() => {
     if (!selectedLayerId) {
       if (
@@ -1065,17 +1104,15 @@ export function Timeline() {
             <Combine className="w-5 h-5" />
           </button>
           <button
-            onClick={() => {
-              if (selectedLayerId) deleteLayer(selectedLayerId);
-            }}
-            disabled={!selectedLayerId}
+            onClick={handleDeleteSelection}
+            disabled={!selectedLayerId && !isTransitionSelected}
             className={cn(
               "p-2 rounded-lg transition-all",
-              selectedLayerId
+              selectedLayerId || isTransitionSelected
                 ? "hover:bg-red-50 text-red-500"
                 : "text-gray-300 cursor-not-allowed",
             )}
-            title="Delete Layer"
+            title={isTransitionSelected ? "Delete Transition" : "Delete Layer"}
           >
             <Trash2 className="w-5 h-5" />
           </button>
