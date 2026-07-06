@@ -1,10 +1,17 @@
 import { NextResponse } from "next/server";
 import { S3Storage } from "@/lib/storage-s3";
 import { resolveMediaContentType } from "@/lib/media-content-type";
+import { markUploadedAsset } from "@/lib/uploaded-asset-cache";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const ALLOWED_TYPES = new Set(["image", "video", "audio"]);
+const MAX_UPLOAD_BYTES: Record<string, number> = {
+  image: 15 * 1024 * 1024,
+  video: 200 * 1024 * 1024,
+  audio: 25 * 1024 * 1024,
+};
 
 const sanitizeFileName = (name: string) =>
   name
@@ -22,6 +29,19 @@ export async function POST(request: Request) {
       return NextResponse.json(
         { success: false, error: "Missing or unsupported editor asset" },
         { status: 400 },
+      );
+    }
+
+    const maxBytes = MAX_UPLOAD_BYTES[requestedType];
+    if (!Number.isFinite(file.size) || file.size <= 0 || file.size > maxBytes) {
+      return NextResponse.json(
+        {
+          success: false,
+          error: `File is too large. Maximum ${requestedType} upload is ${Math.floor(
+            maxBytes / 1024 / 1024,
+          )}MB.`,
+        },
+        { status: 413 },
       );
     }
 
@@ -45,6 +65,11 @@ export async function POST(request: Request) {
         { status: 500 },
       );
     }
+
+    markUploadedAsset(key, {
+      contentType,
+      contentLength: buffer.byteLength,
+    });
 
     return NextResponse.json({
       success: true,

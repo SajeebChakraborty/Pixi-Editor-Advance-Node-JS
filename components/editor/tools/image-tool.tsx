@@ -104,11 +104,27 @@ export function ImageTool() {
     );
 
     try {
-      const uploads = await Promise.all(
-        validFiles.map((file) =>
-          uploadEditorAsset(file, "image", getEditorProjectId()),
-        ),
-      );
+      const uploads: Array<{ file: File; url: string }> = [];
+      const failedNames: string[] = [];
+
+      for (const file of validFiles) {
+        try {
+          const result = await uploadEditorAsset(
+            file,
+            "image",
+            getEditorProjectId(),
+          );
+          uploads.push({ file, url: result.url });
+        } catch (error) {
+          failedNames.push(file.name);
+          console.error(`Image upload failed for ${file.name}:`, error);
+        }
+      }
+
+      if (uploads.length === 0) {
+        throw new Error("No images could be uploaded.");
+      }
+
       const urls = uploads.map((upload) => upload.url);
       const hasVideoLayer = useEditorStore
         .getState()
@@ -119,41 +135,44 @@ export function ImageTool() {
         hasVideoLayer || !hasRenderedImageOnCanvas;
 
       if (shouldAutoAddToCanvas) {
-        const addedToCanvas = await addImage(urls[0], validFiles[0].name);
+        const addedToCanvas = await addImage(urls[0], uploads[0].file.name);
         if (!addedToCanvas) {
           throw new Error("The first uploaded image was not rendered.");
         }
       }
 
-      for (let i = shouldAutoAddToCanvas ? 1 : 0; i < validFiles.length; i += 1) {
+      for (let i = shouldAutoAddToCanvas ? 1 : 0; i < uploads.length; i += 1) {
         addRecentAsset({
           type: "image",
           url: urls[i],
-          name: validFiles[i].name,
+          name: uploads[i].file.name,
         }, "photo");
       }
 
       if (shouldAutoAddToCanvas) {
-        // Ensure the first uploaded image (auto-added to canvas) is also
-        // present and prioritized in recent uploads.
         addRecentAsset({
           type: "image",
           url: urls[0],
-          name: validFiles[0].name,
+          name: uploads[0].file.name,
         }, "photo");
       }
 
       toast.dismiss(toastId);
+      if (failedNames.length > 0) {
+        toast.error(
+          `${failedNames.length} image(s) failed: ${failedNames.join(", ")}`,
+        );
+      }
       if (!shouldAutoAddToCanvas) {
         toast.success(
-          validFiles.length > 1
-            ? `${validFiles.length} images uploaded to recent uploads.`
+          uploads.length > 1
+            ? `${uploads.length} images uploaded to recent uploads.`
             : "Image uploaded to recent uploads.",
         );
-      } else if (validFiles.length > 1) {
+      } else if (uploads.length > 1) {
         toast.success(
-          `${validFiles.length} images uploaded. First image added to canvas; ${
-            validFiles.length - 1
+          `${uploads.length} images uploaded. First image added to canvas; ${
+            uploads.length - 1
           } saved to recent uploads.`,
         );
       }

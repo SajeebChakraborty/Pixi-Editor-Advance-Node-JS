@@ -149,6 +149,14 @@ export interface Asset {
   name: string
   type: 'image' | 'video' | 'audio'
   timestamp: number
+  /** Width/height/duration from local probe — survives refresh without blob URLs. */
+  videoHints?: {
+    width: number
+    height: number
+    duration: number
+  }
+  /** JPEG data URL poster for library thumbnails. */
+  thumbnailUrl?: string
 }
 
 export interface LinkedVideoAudio {

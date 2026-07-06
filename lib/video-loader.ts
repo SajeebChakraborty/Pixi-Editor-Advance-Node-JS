@@ -1,7 +1,158 @@
 import { resolveVideoPlaybackUrl } from "./video-playback-url";
 
 const METADATA_TIMEOUT_MS = 90_000;
+export const EDITOR_ASSET_METADATA_TIMEOUT_MS = 30_000;
 const DIMENSION_TIMEOUT_MS = 12_000;
+export const FAST_DIMENSION_TIMEOUT_MS = 4_000;
+
+export type ProbedVideoMetadata = {
+  width: number;
+  height: number;
+  duration: number;
+  localSrc?: string;
+};
+
+export type VideoSourceHints = {
+  width?: number;
+  height?: number;
+  duration?: number;
+  /** In-memory blob URL from the original File — instant playback while S3 catches up. */
+  localSrc?: string;
+};
+
+const hasCompleteVideoHints = (hints?: VideoSourceHints) =>
+  Boolean(
+    hints?.width &&
+      hints?.height &&
+      hints.duration &&
+      hints.duration > 0,
+  );
+
+/** Read metadata from a local File before/while uploading (instant, no network). */
+export const probeVideoFileMetadata = (
+  file: File,
+  options?: {
+    timeoutMs?: number;
+    objectUrl?: string;
+    keepObjectUrl?: boolean;
+  },
+): Promise<ProbedVideoMetadata> => {
+  const timeoutMs = options?.timeoutMs ?? 12_000;
+  const objectUrl = options?.objectUrl ?? URL.createObjectURL(file);
+  const shouldRevoke = !options?.keepObjectUrl && !options?.objectUrl;
+
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "metadata";
+
+    const cleanup = () => {
+      window.clearTimeout(timeoutId);
+      if (shouldRevoke) {
+        URL.revokeObjectURL(objectUrl);
+      }
+      video.removeAttribute("src");
+      video.load();
+    };
+
+    const timeoutId = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("Could not read video metadata from file."));
+    }, timeoutMs);
+
+    video.addEventListener(
+      "loadedmetadata",
+      () => {
+        const width = Math.max(1, video.videoWidth || 1280);
+        const height = Math.max(1, video.videoHeight || 720);
+        const duration =
+          Number.isFinite(video.duration) && video.duration > 0
+            ? video.duration
+            : 30;
+        cleanup();
+        const result: ProbedVideoMetadata = {
+          width,
+          height,
+          duration,
+          ...(options?.keepObjectUrl ? { localSrc: objectUrl } : {}),
+        };
+        resolve(result);
+      },
+      { once: true },
+    );
+    video.addEventListener(
+      "error",
+      () => {
+        cleanup();
+        reject(new Error("Could not read video metadata from file."));
+      },
+      { once: true },
+    );
+    video.src = objectUrl;
+  });
+};
+
+/** Load a video element for the editor, falling back to local hints when remote is slow. */
+export const prepareEditorVideoElement = async (
+  video: HTMLVideoElement,
+  url: string,
+  sourceHints?: VideoSourceHints,
+) => {
+  const isEditorAsset = url.startsWith("/api/assets/file");
+  const metadataTimeout = isEditorAsset
+    ? EDITOR_ASSET_METADATA_TIMEOUT_MS
+    : 45_000;
+  const preload = isEditorAsset ? "auto" : "metadata";
+  const playbackCandidates = [
+    ...(sourceHints?.localSrc ? [sourceHints.localSrc] : []),
+    url,
+  ].filter((candidate, index, list) => list.indexOf(candidate) === index);
+
+  let lastError: Error | null = null;
+  const maxAttempts = hasCompleteVideoHints(sourceHints) ? 1 : 2;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (attempt > 0) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+    }
+
+    for (const candidate of playbackCandidates) {
+      try {
+        await loadVideoFromCandidates(
+          video,
+          candidate,
+          metadataTimeout,
+          preload,
+        );
+        return;
+      } catch (error) {
+        lastError =
+          error instanceof Error
+            ? error
+            : new Error("Failed to load video source");
+        video.removeAttribute("src");
+        video.load();
+      }
+    }
+  }
+
+  if (!hasCompleteVideoHints(sourceHints)) {
+    throw (
+      lastError ||
+      new Error(
+        "The video server did not return readable metadata in time. Try a smaller MP4 file or check your connection.",
+      )
+    );
+  }
+
+  const fallbackSrc = sourceHints?.localSrc || url;
+  video.muted = true;
+  video.playsInline = true;
+  video.preload = "auto";
+  video.src = fallbackSrc;
+  video.load();
+};
 
 const MEDIA_ERROR_MESSAGES: Record<number, string> = {
   1: "Video loading aborted",
@@ -76,13 +227,17 @@ export const verifyEditorAssetAvailable = async (
   );
 };
 
-const applyVideoSource = (video: HTMLVideoElement, sourceUrl: string) => {
+const applyVideoSource = (
+  video: HTMLVideoElement,
+  sourceUrl: string,
+  preload: "auto" | "metadata" = "metadata",
+) => {
   if (/^https?:\/\//i.test(sourceUrl)) {
     video.crossOrigin = "anonymous";
   } else {
     video.removeAttribute("crossorigin");
   }
-  video.preload = "metadata";
+  video.preload = preload;
   video.src = sourceUrl;
   video.load();
 };
@@ -91,6 +246,7 @@ export const loadVideoElementMetadata = (
   video: HTMLVideoElement,
   sourceUrl: string,
   timeoutMs = METADATA_TIMEOUT_MS,
+  preload: "auto" | "metadata" = "metadata",
 ) =>
   new Promise<void>((resolve, reject) => {
     const cleanup = () => {
@@ -139,7 +295,7 @@ export const loadVideoElementMetadata = (
     video.addEventListener("canplay", handleReady);
     video.addEventListener("error", handleError);
 
-    applyVideoSource(video, sourceUrl);
+    applyVideoSource(video, sourceUrl, preload);
 
     if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
       const hasDuration =
@@ -155,6 +311,8 @@ export const loadVideoElementMetadata = (
 export const loadVideoFromCandidates = async (
   video: HTMLVideoElement,
   url: string,
+  timeoutMs = METADATA_TIMEOUT_MS,
+  preload: "auto" | "metadata" = "metadata",
 ) => {
   const candidates = getVideoPlaybackCandidates(url);
   if (candidates.length === 0) {
@@ -164,7 +322,7 @@ export const loadVideoFromCandidates = async (
   let lastError: Error | null = null;
   for (const candidate of candidates) {
     try {
-      await loadVideoElementMetadata(video, candidate);
+      await loadVideoElementMetadata(video, candidate, timeoutMs, preload);
       return candidate;
     } catch (error) {
       lastError =
@@ -203,7 +361,10 @@ export const waitForVideoElementDimensions = (
     check();
   });
 
-export const warmUpVideoElementFrame = (video: HTMLVideoElement) =>
+export const warmUpVideoElementFrame = (
+  video: HTMLVideoElement,
+  maxWaitMs = 2500,
+) =>
   new Promise<void>((resolve) => {
     const finalize = () => {
       video.pause();
@@ -223,7 +384,7 @@ export const warmUpVideoElementFrame = (video: HTMLVideoElement) =>
       return;
     }
 
-    const timeoutId = window.setTimeout(finalize, 2500);
+    const timeoutId = window.setTimeout(finalize, maxWaitMs);
     video.addEventListener(
       "loadeddata",
       () => {

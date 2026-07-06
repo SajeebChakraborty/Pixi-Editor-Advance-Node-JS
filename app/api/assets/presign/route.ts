@@ -3,6 +3,7 @@ import { resolveMediaContentType } from "@/lib/media-content-type";
 import { S3Storage } from "@/lib/storage-s3";
 
 export const runtime = "nodejs";
+export const maxDuration = 300;
 
 const ALLOWED_TYPES = new Set(["image", "video", "audio"]);
 const MAX_UPLOAD_BYTES: Record<string, number> = {

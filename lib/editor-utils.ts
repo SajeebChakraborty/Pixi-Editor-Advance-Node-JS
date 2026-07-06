@@ -3,11 +3,16 @@ import { useEditorStore, type Layer } from "./store";
 import { toast } from "sonner";
 import { resolveVideoPlaybackUrl } from "./video-playback-url";
 import {
+  FAST_DIMENSION_TIMEOUT_MS,
   loadVideoFromCandidates,
+  prepareEditorVideoElement,
   verifyEditorAssetAvailable,
   waitForVideoElementDimensions,
   warmUpVideoElementFrame,
+  type VideoSourceHints,
 } from "./video-loader";
+export type { VideoSourceHints } from "./video-loader";
+import { captureVideoPosterFromElement } from "./video-poster";
 import {
   attachVideoOverlay,
   centerObjectOnProjectCanvas,
@@ -209,6 +214,7 @@ export const addMediaFromUrl = async (
   mediaName?: string,
   targetFabricCanvas?: fabric.Canvas | null,
   placement?: { left: number; top: number },
+  sourceHints?: VideoSourceHints,
 ): Promise<string | null> => {
   const { canvas, addLayer, setVideoState, addRecentAsset, videoState, setCanvas } = store;
   const { width: storeWidth, height: storeHeight } = canvas || { width: 1280, height: 720 };
@@ -240,7 +246,7 @@ export const addMediaFromUrl = async (
     if (existingCanvas) return existingCanvas;
 
     const startedAt = Date.now();
-    const timeoutMs = 10000;
+    const timeoutMs = 20000;
 
     while (Date.now() - startedAt < timeoutMs) {
       await new Promise((resolve) => requestAnimationFrame(resolve));
@@ -289,7 +295,6 @@ export const addMediaFromUrl = async (
 
     const videoDisplayName = mediaName?.trim() || "Recent Video";
 
-    if (!silent) addRecentAsset({ url, name: videoDisplayName, type: "video" });
     const videoEl = document.createElement("video");
     videoEl.muted = Boolean(videoState?.isMuted);
     videoEl.volume = videoState?.isMuted
@@ -297,17 +302,24 @@ export const addMediaFromUrl = async (
       : Math.min(1, Math.max(0, Number(videoState?.volume ?? 1)));
     videoEl.playbackRate = Number(videoState?.playbackRate || 1);
     videoEl.playsInline = true;
+    videoEl.preload = "auto";
+
+    let usedHintsFallback = false;
+    let resolvedDuration =
+      sourceHints?.duration && sourceHints.duration > 0
+        ? sourceHints.duration
+        : Number.isFinite(videoState?.duration) && (videoState?.duration || 0) > 0
+          ? (videoState?.duration as number)
+          : 30;
 
     try {
-      if (url.startsWith("/api/assets/file")) {
-        await verifyEditorAssetAvailable(url);
-      }
+      await prepareEditorVideoElement(videoEl, url, sourceHints);
 
-      await loadVideoFromCandidates(videoEl, url);
-
-      const resolvedDuration =
+      resolvedDuration =
         Number.isFinite(videoEl.duration) && videoEl.duration > 0
           ? videoEl.duration
+          : sourceHints?.duration && sourceHints.duration > 0
+            ? sourceHints.duration
           : Number.isFinite(videoState?.duration) && (videoState?.duration || 0) > 0
             ? (videoState?.duration as number)
             : 30;
@@ -316,23 +328,71 @@ export const addMediaFromUrl = async (
         setVideoState({ duration: resolvedDuration, endTime: resolvedDuration });
       }
 
-      // Ensure dimensions are ready before creating Fabric image.
-      await waitForVideoElementDimensions(videoEl);
+      const hasDimensions =
+        (videoEl.videoWidth || 0) > 0 && (videoEl.videoHeight || 0) > 0;
+      if (!hasDimensions) {
+        try {
+          await waitForVideoElementDimensions(
+            videoEl,
+            sourceHints ? FAST_DIMENSION_TIMEOUT_MS : 12_000,
+          );
+        } catch {
+          if (!sourceHints?.width || !sourceHints?.height) {
+            throw new Error("Video dimensions unavailable");
+          }
+          usedHintsFallback = true;
+        }
+      }
 
-      // Warm up first decodable frame so Fabric does not render a blank white video object.
-      await warmUpVideoElementFrame(videoEl);
+      if (!usedHintsFallback) {
+        await warmUpVideoElementFrame(
+          videoEl,
+          sourceHints ? 600 : 1500,
+        );
+      }
     } catch (e) {
-       console.warn("[VIDEO_METADATA]", e);
-       if (!silent) {
-        const message = e instanceof Error ? e.message : "Video load failed";
-        toast.error(`Video load failed: ${message}`);
-       }
-       return null;
+      if (
+        sourceHints?.width &&
+        sourceHints?.height &&
+        sourceHints?.duration
+      ) {
+        console.warn("[VIDEO_METADATA] Falling back to local video hints", e);
+        videoEl.src = sourceHints.localSrc || url;
+        videoEl.load();
+        usedHintsFallback = true;
+      } else {
+        console.warn("[VIDEO_METADATA]", e);
+        if (!silent) {
+          const message = e instanceof Error ? e.message : "Video load failed";
+          toast.error(`Video load failed: ${message}`);
+        }
+        return null;
+      }
     }
 
     const objectId = forceObjectId || `vid_${Date.now()}`;
-    const vWidth = videoEl.videoWidth || 1280;
-    const vHeight = videoEl.videoHeight || 720;
+    const vWidth = Math.max(
+      1,
+      videoEl.videoWidth || sourceHints?.width || 1280,
+    );
+    const vHeight = Math.max(
+      1,
+      videoEl.videoHeight || sourceHints?.height || 720,
+    );
+
+    if (!silent) {
+      addRecentAsset({
+        url,
+        name: videoDisplayName,
+        type: "video",
+        thumbnailUrl: captureVideoPosterFromElement(videoEl) ?? undefined,
+        videoHints: {
+          width: vWidth,
+          height: vHeight,
+          duration: resolvedDuration,
+        },
+      });
+    }
 
     let targetCanvas = fabricCanvas;
     const currentStore = useEditorStore.getState();
@@ -460,6 +520,8 @@ export const addMediaFromUrl = async (
       const videoDuration =
         Number.isFinite(videoEl.duration) && videoEl.duration > 0
           ? videoEl.duration
+          : sourceHints?.duration && sourceHints.duration > 0
+            ? sourceHints.duration
           : Number.isFinite(videoState?.duration) && (videoState?.duration || 0) > 0
             ? (videoState?.duration as number)
             : 30;

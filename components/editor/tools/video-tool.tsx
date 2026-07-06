@@ -8,9 +8,13 @@ import { Upload, Plus, Film, Play, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { addMediaFromUrl, PHOTO_DRAG_MIME_TYPE } from "@/lib/editor-utils";
+import { probeVideoFileMetadata } from "@/lib/video-loader";
+import type { VideoSourceHints } from "@/lib/video-loader";
 import { AssetService } from "@/lib/asset-service";
 import { uploadEditorAsset } from "@/lib/editor-assets";
 import { getEditorProjectId } from "@/lib/project-persistence";
+import { LibraryVideoThumbnail } from "@/components/editor/library-video-thumbnail";
+import { captureVideoPoster } from "@/lib/video-poster";
 
 const MAX_VIDEO_UPLOAD_BYTES = 200 * 1024 * 1024;
 
@@ -38,9 +42,24 @@ export function VideoTool() {
   }, []);
 
   useEffect(() => {
-    const recentMedia = videoRecentAssets.filter(
-      (asset) => asset.type === "video" || asset.type === "image",
-    );
+    const recentMedia = videoRecentAssets
+      .filter((asset) => asset.type === "video" || asset.type === "image")
+      .map((asset) => ({
+        id: asset.id,
+        name: asset.name,
+        url: asset.url,
+        type: asset.type,
+        ...(asset.videoHints
+          ? {
+              sourceHints: {
+                width: asset.videoHints.width,
+                height: asset.videoHints.height,
+                duration: asset.videoHints.duration,
+              },
+            }
+          : {}),
+        ...(asset.thumbnailUrl ? { thumbnailUrl: asset.thumbnailUrl } : {}),
+      }));
     setLibraryVideos((previous) => {
       const persisted = previous.filter((item) => item.persisted);
       const combined = [...recentMedia, ...persisted];
@@ -111,6 +130,12 @@ export function VideoTool() {
       if (typeof video.url === "string" && video.url.startsWith("blob:")) {
         URL.revokeObjectURL(video.url);
       }
+      if (
+        typeof video.sourceHints?.localSrc === "string" &&
+        video.sourceHints.localSrc.startsWith("blob:")
+      ) {
+        URL.revokeObjectURL(video.sourceHints.localSrc);
+      }
       toast.success("Video deleted from Stock/Library.");
     } catch {
       toast.error("Could not delete video from Stock/Library.");
@@ -155,27 +180,101 @@ export function VideoTool() {
 
     setLoading(true);
     const toastId = toast.loading("Uploading video...");
+    let uploadedUrl: string | null = null;
+    let sourceHints: VideoSourceHints | null = null;
+    const localSrc = URL.createObjectURL(file);
     try {
-      const { url } = await uploadEditorAsset(
-        file,
-        "video",
-        getEditorProjectId(),
-      );
-      toast.success("Video uploaded successfully", { id: toastId });
+      const [uploadResult, probedHints] = await Promise.all([
+        uploadEditorAsset(file, "video", getEditorProjectId()),
+        probeVideoFileMetadata(file, {
+          objectUrl: localSrc,
+          keepObjectUrl: true,
+        }).catch(() => ({
+          width: 1280,
+          height: 720,
+          duration: 30,
+          localSrc,
+        })),
+      ]);
+      uploadedUrl = uploadResult.url;
+      sourceHints = probedHints;
       const localVideo = {
         id: Date.now().toString(),
         name: file.name,
-        url,
+        url: uploadResult.url,
+        sourceHints: probedHints,
       };
       setLibraryVideos((prev) => [localVideo, ...prev]);
-      await handleAddVideoToCanvas(url);
+      useEditorStore.getState().addRecentAsset(
+        {
+          type: "video",
+          url: uploadResult.url,
+          name: file.name,
+          videoHints: {
+            width: probedHints.width,
+            height: probedHints.height,
+            duration: probedHints.duration,
+          },
+        },
+        "video",
+      );
+      toast.success("Video uploaded successfully", { id: toastId });
+
+      void captureVideoPoster(localSrc)
+        .then((posterUrl) => {
+          if (!posterUrl) return;
+          setLibraryVideos((prev) =>
+            prev.map((item) =>
+              item.url === uploadResult.url
+                ? { ...item, thumbnailUrl: posterUrl }
+                : item,
+            ),
+          );
+          useEditorStore.getState().addRecentAsset(
+            {
+              type: "video",
+              url: uploadResult.url,
+              name: file.name,
+              videoHints: {
+                width: probedHints.width,
+                height: probedHints.height,
+                duration: probedHints.duration,
+              },
+              thumbnailUrl: posterUrl,
+            },
+            "video",
+          );
+        })
+        .catch(() => undefined);
     } catch (error) {
+      URL.revokeObjectURL(localSrc);
       toast.error(
         error instanceof Error ? error.message : "Video upload failed",
         { id: toastId },
       );
     } finally {
       setLoading(false);
+    }
+
+    if (uploadedUrl) {
+      const addToastId = toast.loading("Adding video to timeline...");
+      try {
+        const added = await handleAddVideoToCanvas(
+          uploadedUrl,
+          sourceHints ?? undefined,
+        );
+        if (added) {
+          toast.success("Video added to timeline", { id: addToastId });
+        } else {
+          toast.error("Video uploaded but could not be added to timeline.", {
+            id: addToastId,
+          });
+        }
+      } catch {
+        toast.error("Video uploaded but could not be added to timeline.", {
+          id: addToastId,
+        });
+      }
     }
   };
 
@@ -317,9 +416,14 @@ export function VideoTool() {
     setVideoUrl("");
   };
 
-  const handleAddVideoToCanvas = async (url?: string) => {
+  const handleAddVideoToCanvas = async (
+    url?: string,
+    sourceHints?: VideoSourceHints,
+  ) => {
     const targetUrl = url || selectedVideo;
     if (!targetUrl) return false;
+    const libraryItem = libraryVideos.find((video) => video.url === targetUrl);
+    const resolvedHints = sourceHints ?? libraryItem?.sourceHints;
     const store = useEditorStore.getState();
     const objectId = await addMediaFromUrl(
       targetUrl,
@@ -327,8 +431,10 @@ export function VideoTool() {
       "video",
       false,
       undefined,
-      libraryVideos.find((video) => video.url === targetUrl)?.name,
+      libraryItem?.name,
       store.videoFabricCanvas,
+      undefined,
+      resolvedHints,
     );
     if (!url) setSelectedVideo(null); // Only clear selection if added from editor, keep library open
     return Boolean(objectId);
@@ -426,7 +532,7 @@ export function VideoTool() {
                       );
                       return;
                     }
-                    void handleAddVideoToCanvas(video.url);
+                    void handleAddVideoToCanvas(video.url, video.sourceHints);
                   }}
                 >
                   <button
@@ -448,15 +554,11 @@ export function VideoTool() {
                       className="w-full h-full object-cover opacity-70 group-hover:opacity-100 transition-opacity"
                     />
                   ) : (
-                    <video
-                      src={video.url}
-                      className="w-full h-full object-cover opacity-60 group-hover:opacity-100 transition-opacity"
-                      muted
-                      onMouseOver={(e) => e.currentTarget.play()}
-                      onMouseOut={(e) => {
-                        e.currentTarget.pause();
-                        e.currentTarget.currentTime = 0;
-                      }}
+                    <LibraryVideoThumbnail
+                      url={video.url}
+                      sourceHints={video.sourceHints}
+                      thumbnailUrl={video.thumbnailUrl}
+                      className="opacity-60 group-hover:opacity-100 transition-opacity"
                     />
                   )}
                   <div className="absolute inset-0 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">

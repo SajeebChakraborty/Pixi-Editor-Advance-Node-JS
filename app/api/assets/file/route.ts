@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { S3Storage } from "@/lib/storage-s3";
 import { resolveMediaContentType } from "@/lib/media-content-type";
+import { getUploadedAssetCache } from "@/lib/uploaded-asset-cache";
 
 export const runtime = "nodejs";
 
@@ -42,6 +43,22 @@ export async function HEAD(request: NextRequest) {
       { error: "Invalid editor asset key" },
       { status: 400 },
     );
+  }
+
+  const cached = getUploadedAssetCache(key);
+  if (cached) {
+    return new NextResponse(null, {
+      status: 200,
+      headers: assetResponseHeaders(
+        key,
+        {
+          contentType: cached.contentType,
+          contentLength: cached.contentLength,
+          acceptRanges: "bytes",
+        },
+        200,
+      ),
+    });
   }
 
   const file = await S3Storage.headObject(key);
