@@ -43,6 +43,7 @@ import {
   type TimelineSegment,
 } from "@/lib/timeline-tracks";
 import { swapOverlayTracks, syncFabricLayerStack } from "@/lib/layer-stack";
+import { syncEditorMediaPlayback } from "@/lib/editor-media-playback";
 
 const videoFrameCache = new Map<string, Promise<string[]>>();
 
@@ -763,15 +764,23 @@ export function Timeline() {
   };
 
   const togglePlay = () => {
-    if (isPlaying) {
+    const nextPlaying = !isPlaying;
+
+    if (nextPlaying) {
+      const atEnd = currentTime >= duration - 0.01;
+      setVideoState({
+        ...(atEnd ? { currentTime: 0 } : {}),
+        isPlaying: true,
+      });
+    } else {
       setVideoState({ isPlaying: false });
-      return;
     }
 
-    const atEnd = currentTime >= duration - 0.01;
-    setVideoState({
-      ...(atEnd ? { currentTime: 0 } : {}),
-      isPlaying: true,
+    syncEditorMediaPlayback({
+      playing: nextPlaying,
+      isMuted: Boolean(videoState.isMuted),
+      volume: Number(videoState.volume ?? 1),
+      fromUserGesture: true,
     });
   };
 

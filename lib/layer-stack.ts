@@ -1,7 +1,7 @@
 import type { Canvas, FabricObject } from "fabric";
 import type { Layer } from "./store";
 import { useEditorStore } from "./store";
-import { applyVideoOverlayControls, applyVideoResizeControls } from "./fabric-transform-controls";
+import { applyOverlayControlVisibility } from "./fabric-transform-controls";
 import { syncMediaOverlays } from "./media-overlay";
 import { syncVideoOverlays } from "./video-overlay";
 
@@ -88,7 +88,7 @@ export function syncFabricLayerStack(
   });
 
   videoObjects.forEach((object) => {
-    (object as any).opacity = 0;
+    (object as any).opacity = 0.004;
     canvas.sendObjectToBack(object);
   });
 
@@ -100,34 +100,13 @@ export function syncFabricLayerStack(
     })
     .forEach(({ object, layer }) => {
       canvas.bringObjectToFront(object);
-      if (
-        useEditorStore.getState().editorMode === "video" &&
-        !(object as any)._videoEl
-      ) {
-        applyVideoOverlayControls(object);
+      if (useEditorStore.getState().editorMode === "video" && !layer.locked) {
+        applyOverlayControlVisibility(object);
         object.set({
           lockMovementX: Boolean(layer.locked),
           lockMovementY: Boolean(layer.locked),
           lockScalingX: Boolean(layer.locked),
           lockScalingY: Boolean(layer.locked),
-          hasControls: !layer.locked,
-          hasBorders: !layer.locked,
-          evented: !layer.locked,
-          selectable: !layer.locked,
-          uniformScaling: false,
-        });
-      } else if (
-        useEditorStore.getState().editorMode === "video" &&
-        (object as any)._videoEl
-      ) {
-        applyVideoResizeControls(object);
-        object.set({
-          lockMovementX: Boolean(layer.locked),
-          lockMovementY: Boolean(layer.locked),
-          lockScalingX: Boolean(layer.locked),
-          lockScalingY: Boolean(layer.locked),
-          hasControls: !layer.locked,
-          hasBorders: !layer.locked,
           evented: !layer.locked,
           selectable: !layer.locked,
           uniformScaling: false,

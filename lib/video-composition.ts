@@ -137,7 +137,7 @@ export interface VideoComposition {
 }
 
 const MIN_SCENE_DURATION = 0.1;
-const DEFAULT_TRANSITION_DURATION = 0.5;
+const DEFAULT_TRANSITION_DURATION = 1;
 
 const finiteNonNegative = (value: unknown, fallback = 0) => {
   const parsed = Number(value);
@@ -161,8 +161,11 @@ const defaultFrameStyle = () => ({
   clipInset: emptyClipInset(),
 });
 
-const getTransitionProgress = (elapsed: number, duration: number) =>
-  clamp01(elapsed / Math.max(MIN_SCENE_DURATION, duration));
+const getTransitionProgress = (elapsed: number, duration: number) => {
+  const linear = clamp01(elapsed / Math.max(MIN_SCENE_DURATION, duration));
+  // Ease-in-out so transitions feel visible instead of snapping past.
+  return linear * linear * (3 - 2 * linear);
+};
 
 const applyEnterTransition = (
   type: SceneTransitionType,
@@ -450,20 +453,6 @@ export const resolveCompositionFrame = (
       style = mergeFrameStyles(
         style,
         applyEnterTransition(scene.transitionBefore.type, progress),
-      );
-    }
-
-    const userStart = normalizeTransition(scene.layer.data?.transitionBefore);
-    if (
-      previousScene &&
-      userStart.type !== "none" &&
-      userStart.duration > 0 &&
-      sceneElapsed < userStart.duration
-    ) {
-      const progress = getTransitionProgress(sceneElapsed, userStart.duration);
-      style = mergeFrameStyles(
-        style,
-        applyEnterTransition(userStart.type, progress),
       );
     }
 

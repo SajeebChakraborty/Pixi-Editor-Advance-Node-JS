@@ -53,10 +53,15 @@ import { syncFabricLayerStack } from "@/lib/layer-stack";
 import { detachMediaOverlays, syncMediaOverlays, attachMediaOverlay, isMediaOverlayObject } from "@/lib/media-overlay";
 import {
   applyFabricTransformControls,
+  applyOverlayControlVisibility,
   applyVideoOverlayControls,
   applyVideoResizeControls,
   installFabricTransformControlDefaults,
 } from "@/lib/fabric-transform-controls";
+import {
+  playMediaElementForGesture,
+  registerEditorMediaPlaybackHandler,
+} from "@/lib/editor-media-playback";
 
 function getProjectCanvasSize(canvas: { width?: number; height?: number }) {
   return {
@@ -266,10 +271,34 @@ export function VideoPlayerCanvas() {
     installFabricTransformControlDefaults(canvas);
 
     const syncNativeVideoLayers = () => {
+      if ((canvas as FabricCanvas & { _currentTransform?: unknown })._currentTransform) {
+        return;
+      }
       syncVideoOverlays(canvas);
       syncMediaOverlays(canvas, useEditorStore.getState().getLayers());
     };
     canvas.on("after:render", syncNativeVideoLayers);
+
+    const activateOverlayObject = (target: FabricObject | undefined) => {
+      if (!target || target.selectable === false) return;
+      applyOverlayControlVisibility(target);
+      if (canvas.getActiveObject() !== target) {
+        canvas.setActiveObject(target);
+      }
+      const objectName = (target as any).name as string | undefined;
+      const layerId = getLayers().find((layer) => layer.objectId === objectName)?.id;
+      if (layerId) selectLayer(layerId);
+      canvas.requestRenderAll();
+    };
+
+    canvas.on("mouse:over", (event) => {
+      activateOverlayObject(event.target);
+    });
+
+    const pausePlaybackForEdit = () => {
+      if (!useEditorStore.getState().videoState.isPlaying) return;
+      useEditorStore.getState().setVideoState({ isPlaying: false });
+    };
 
     const syncActiveVideoOverlay = (target: FabricObject | undefined) => {
       if (!target || !(target as any)._videoEl) return;
@@ -280,6 +309,7 @@ export function VideoPlayerCanvas() {
     };
 
     canvas.on("object:scaling", (event) => {
+      pausePlaybackForEdit();
       const target = event.target as any;
       if (target?._videoEl) {
         target._userTransform = true;
@@ -289,6 +319,7 @@ export function VideoPlayerCanvas() {
       }
     });
     canvas.on("object:moving", (event) => {
+      pausePlaybackForEdit();
       const target = event.target as any;
       if (target?._videoEl) {
         target._userTransform = true;
@@ -320,7 +351,9 @@ export function VideoPlayerCanvas() {
         selectLayer(null);
         return;
       }
-      const objectName = (activeObjects[0] as any).name as string | undefined;
+      const activeObject = activeObjects[0];
+      applyOverlayControlVisibility(activeObject);
+      const objectName = (activeObject as any).name as string | undefined;
       const layerId = getLayers().find((layer) => layer.objectId === objectName)?.id;
       selectLayer(layerId || null);
     };
@@ -547,11 +580,12 @@ export function VideoPlayerCanvas() {
       .find((candidate: any) => candidate.name === layer.objectId);
     if (!object || layer.visible === false) return;
 
+    applyOverlayControlVisibility(object);
     if (canvas.getActiveObject() !== object) {
       canvas.setActiveObject(object);
-      canvas.requestRenderAll();
     }
-  }, [getLayers, globalCanvas.selectedLayerId, globalCanvas.pages]);
+    canvas.requestRenderAll();
+  }, [getLayers, globalCanvas.selectedLayerId, globalCanvas.pages, selectLayer]);
 
   useEffect(() => {
     const onLoadedMetadata = () => {
@@ -671,10 +705,6 @@ export function VideoPlayerCanvas() {
         },
       );
 
-      const pendingPresentations: Array<{
-        object: any;
-        frame: (typeof frames)[number];
-      }> = [];
       const activeLayerIds = new Set(
         frames.map((frame) => frame.scene.layer.id),
       );
@@ -737,7 +767,7 @@ export function VideoPlayerCanvas() {
             clipInset: frame.clipInset,
           };
           object._presentationFilterCss = activeFilterCss;
-          pendingPresentations.push({ object, frame });
+          (object as any)._sceneOrder = frame.scene.order;
         } else {
           object._presentationFrame = undefined;
           object._presentationFilterCss = undefined;
@@ -776,13 +806,6 @@ export function VideoPlayerCanvas() {
 
       syncFabricLayerStack(canvas, getLayers());
       syncVideoOverlays(canvas);
-
-      pendingPresentations.forEach(({ object, frame }) => {
-        const videoEl = object._videoEl as HTMLVideoElement | undefined;
-        if (videoEl) {
-          videoEl.style.zIndex = String(10 + frame.scene.order);
-        }
-      });
 
       canvas.requestRenderAll();
     }
@@ -1055,25 +1078,81 @@ export function VideoPlayerCanvas() {
     });
   };
 
+  const runMediaPlaybackSync = useCallback(
+    async (options: {
+      playing: boolean;
+      isMuted: boolean;
+      volume: number;
+      fromUserGesture?: boolean;
+    }) => {
+      const mediaElements: HTMLMediaElement[] = [];
+      fabricRef.current?.getObjects().forEach((object: any) => {
+        if (object._videoEl instanceof HTMLVideoElement) {
+          mediaElements.push(object._videoEl);
+        }
+      });
+      audioElementsRef.current.forEach((audio) => mediaElements.push(audio));
+      linkedAudioElementsRef.current.forEach((audio) =>
+        mediaElements.push(audio),
+      );
+
+      if (!options.playing) {
+        mediaElements.forEach((element) => element.pause());
+        videoARef.current?.pause();
+        videoBRef.current?.pause();
+        return;
+      }
+
+      for (const element of mediaElements) {
+        let forceMuted = false;
+        if (element instanceof HTMLVideoElement) {
+          const owner = fabricRef.current
+            ?.getObjects()
+            .find((object: any) => object._videoEl === element);
+          const layer = useEditorStore
+            .getState()
+            .getLayers()
+            .find((candidate) => candidate.objectId === (owner as any)?.name);
+          const linkedAudio = layer ? getLinkedVideoAudio(layer) : null;
+          forceMuted = Boolean(linkedAudio && !linkedAudio.allowNativeAudio);
+        }
+        await playMediaElementForGesture(element, options, forceMuted);
+      }
+    },
+    [],
+  );
+
   const togglePlayback = useCallback(() => {
     const latestState = useEditorStore.getState().videoState;
-    if (latestState.isPlaying) {
-      videoARef.current?.pause();
-      videoBRef.current?.pause();
+    const nextPlaying = !latestState.isPlaying;
+
+    if (nextPlaying) {
+      const compositionDuration = Math.max(0, composition.duration);
+      const atEnd =
+        compositionDuration > 0 &&
+        latestState.currentTime >= compositionDuration - 0.01;
+      setVideoState({
+        ...(atEnd ? { currentTime: 0 } : {}),
+        isPlaying: true,
+      });
+    } else {
       setVideoState({ isPlaying: false });
-      return;
     }
 
-    const compositionDuration = Math.max(0, composition.duration);
-    const atEnd =
-      compositionDuration > 0 &&
-      latestState.currentTime >= compositionDuration - 0.01;
-
-    setVideoState({
-      ...(atEnd ? { currentTime: 0 } : {}),
-      isPlaying: true,
+    void runMediaPlaybackSync({
+      playing: nextPlaying,
+      isMuted: latestState.isMuted,
+      volume: latestState.volume,
+      fromUserGesture: true,
     });
-  }, [composition.duration, setVideoState]);
+  }, [composition.duration, runMediaPlaybackSync, setVideoState]);
+
+  useEffect(
+    () => registerEditorMediaPlaybackHandler((options) => {
+      void runMediaPlaybackSync(options);
+    }),
+    [runMediaPlaybackSync],
+  );
 
   useEffect(() => {
     const handleSpacebar = (event: KeyboardEvent) => {

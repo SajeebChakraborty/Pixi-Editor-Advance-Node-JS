@@ -711,23 +711,27 @@ export const addMediaFromUrl = async (
         applyVideoOverlayControls(fabricImg);
       }
       liveCanvas.setActiveObject(fabricImg);
-      syncFabricLayerStack(
-        liveCanvas,
-        useEditorStore.getState().getLayers(),
-      );
-      attachMediaOverlay(liveCanvas, fabricImg as any);
 
       if (!silent) {
         const currentVideoState = useEditorStore.getState().videoState;
-        const imageStartTime = hasVideoLayer
-          ? Math.max(0, Number(currentVideoState.currentTime || 0))
-          : 0;
-        const imageDuration = hasVideoLayer
-          ? Math.max(
-              0.1,
-              Number(currentVideoState.duration || 0) - imageStartTime,
-            )
-          : 3600;
+        const existingLayers = useEditorStore.getState().getLayers();
+        const primaryVideoLayer = existingLayers
+          .filter((layer) => layer.type === "video")
+          .sort(
+            (left, right) =>
+              Number(left.startTime || 0) - Number(right.startTime || 0),
+          )[0];
+        const imageStartTime = primaryVideoLayer
+          ? Number(primaryVideoLayer.startTime || 0)
+          : Math.max(0, Number(currentVideoState.currentTime || 0));
+        const imageDuration = primaryVideoLayer
+          ? Math.max(0.1, Number(primaryVideoLayer.duration || 0))
+          : hasVideoLayer
+            ? Math.max(
+                0.1,
+                Number(currentVideoState.duration || 0) - imageStartTime,
+              )
+            : 3600;
 
         addLayer({
           type: "image",
@@ -735,7 +739,7 @@ export const addMediaFromUrl = async (
           locked: false,
           visible: true,
           objectId: objectId,
-          track: getNextOverlayTrack(useEditorStore.getState().getLayers()),
+          track: getNextOverlayTrack(existingLayers),
           data: {
             url,
             name: imageDisplayName,
@@ -766,6 +770,15 @@ export const addMediaFromUrl = async (
           startTime: imageStartTime,
           duration: imageDuration,
         });
+      }
+
+      syncFabricLayerStack(
+        liveCanvas,
+        useEditorStore.getState().getLayers(),
+      );
+      attachMediaOverlay(liveCanvas, fabricImg as any);
+
+      if (!silent) {
         requestAnimationFrame(() => {
           useEditorStore.getState().saveActiveCanvasToHistory();
         });

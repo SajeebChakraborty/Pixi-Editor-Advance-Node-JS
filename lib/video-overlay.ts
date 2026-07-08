@@ -1,5 +1,6 @@
 import { FabricImage, type Canvas, type FabricObject } from "fabric";
 import { videoNeedsCrossOrigin } from "./video-playback-url";
+import { computeVideoOverlayZIndex } from "./overlay-z-index";
 
 export type VideoFabricObject = FabricObject & {
   name?: string;
@@ -409,8 +410,6 @@ export function syncVideoOverlay(object: VideoFabricObject) {
   if (!root) return;
   if (video.parentElement !== root) root.appendChild(video);
 
-  const objectIndex = canvas.getObjects().indexOf(object);
-
   if (!object._userTransform) {
     video.style.left = "0";
     video.style.top = "0";
@@ -447,7 +446,9 @@ export function syncVideoOverlay(object: VideoFabricObject) {
     )}`;
   }
 
-  video.style.zIndex = `${Math.max(0, objectIndex)}`;
+  video.style.zIndex = `${computeVideoOverlayZIndex(
+    Number((object as VideoFabricObject & { _sceneOrder?: number })._sceneOrder ?? 0),
+  )}`;
   video.style.display =
     object._videoOverlayVisible === false || object.visible === false
       ? "none"
@@ -499,6 +500,8 @@ export function attachVideoOverlay(
     willChange: "transform, opacity",
   });
   video.playsInline = true;
+  video.setAttribute("playsinline", "");
+  video.setAttribute("webkit-playsinline", "");
   video.preload = "auto";
   video.disablePictureInPicture = true;
 

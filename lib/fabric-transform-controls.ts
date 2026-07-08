@@ -1,9 +1,9 @@
 import * as fabric from "fabric";
 import type { IText } from "fabric";
 
-const HANDLE_COLOR = "#d1d5db";
-const HANDLE_STROKE = "#ffffff";
-const BORDER_COLOR = "#ffffff";
+const HANDLE_COLOR = "#ffffff";
+const HANDLE_STROKE = "#6366f1";
+const BORDER_COLOR = "#a855f7";
 
 const isTextFabricObject = (object: fabric.FabricObject) => {
   const type = String(object.type || "").toLowerCase();
@@ -19,9 +19,9 @@ export function applyFabricTransformControls(object: fabric.FabricObject) {
     transparentCorners: false,
     cornerColor: HANDLE_COLOR,
     cornerStrokeColor: HANDLE_STROKE,
-    cornerSize: 10,
+    cornerSize: 14,
     cornerStyle: "rect",
-    padding: 0,
+    padding: 6,
     borderOpacityWhenMoving: 1,
     strokeUniform: true,
     hasControls: true,
@@ -50,8 +50,8 @@ export function applyVideoResizeControls(object: fabric.FabricObject) {
     centeredScaling: true,
     hasControls: true,
     hasBorders: true,
-    perPixelTargetFind: false,
-    hoverCursor: "move",
+    perPixelTargetFind: true,
+    hoverCursor: "nwse-resize",
     moveCursor: "move",
   });
 
@@ -72,7 +72,7 @@ export function applyVideoOverlayControls(object: fabric.FabricObject) {
 
   const isText = isTextFabricObject(object);
   object.set({
-    padding: isText ? 12 : 4,
+    padding: isText ? 14 : 10,
     ...(isText ? { editable: false, lockRotation: false } : {}),
   });
 
@@ -106,6 +106,26 @@ export function applyVideoOverlayControls(object: fabric.FabricObject) {
   };
   text.on("mousedblclick", text.__videoOverlayDblClick);
 }
+
+/** Keep fabric controls visible even when the HTML preview carries the pixels. */
+export const applyOverlayControlVisibility = (object: fabric.FabricObject) => {
+  if ((object as fabric.FabricObject & { _videoEl?: unknown })._videoEl) {
+    applyVideoResizeControls(object);
+  } else {
+    applyVideoOverlayControls(object);
+  }
+
+  object.set({
+    hasControls: true,
+    hasBorders: true,
+    selectable: true,
+    evented: true,
+    opacity: 0.004,
+    stroke: "rgba(255,255,255,0.01)",
+    strokeWidth: 1,
+  });
+  object.setCoords();
+};
 
 export function installFabricTransformControlDefaults(canvas: fabric.Canvas) {
   fabric.Object.prototype.set({

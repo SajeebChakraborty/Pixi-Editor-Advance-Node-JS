@@ -2,6 +2,7 @@ import type { Canvas, FabricObject, IText } from "fabric";
 import type { Layer } from "./store";
 import { useEditorStore } from "./store";
 import { getObjectOverlayRect } from "./video-overlay";
+import { computeMediaOverlayZIndex } from "./overlay-z-index";
 
 const MEDIA_OVERLAY_ROOT_ATTRIBUTE = "data-media-overlay-root";
 
@@ -41,7 +42,7 @@ function getMediaOverlayRoot(canvas: Canvas) {
       position: "absolute",
       overflow: "hidden",
       pointerEvents: "none",
-      zIndex: "25",
+      zIndex: "40",
       background: "transparent",
     });
     host.insertBefore(root, wrapper);
@@ -170,7 +171,7 @@ export function syncMediaOverlay(
       transform: `translate(-50%, -50%)${rotation}`,
       transformOrigin: "center center",
       opacity: visible ? "1" : "0",
-      zIndex: `${Math.max(1, stackIndex)}`,
+      zIndex: `${computeMediaOverlayZIndex(layer, stackIndex)}`,
     });
   } else {
     Object.assign(element.style, {
@@ -187,14 +188,16 @@ export function syncMediaOverlay(
       transformOrigin: "center center",
       opacity: visible ? "1" : "0",
       display: visible ? "block" : "none",
-      zIndex: `${Math.max(1, stackIndex)}`,
+      zIndex: `${computeMediaOverlayZIndex(layer, stackIndex)}`,
     });
   }
 
   object.set({
-    opacity: 0,
+    opacity: 0.004,
+    stroke: "rgba(255,255,255,0.01)",
+    strokeWidth: 1,
     objectCaching: false,
-    perPixelTargetFind: false,
+    perPixelTargetFind: true,
     hoverCursor: "move",
     moveCursor: "move",
   });
