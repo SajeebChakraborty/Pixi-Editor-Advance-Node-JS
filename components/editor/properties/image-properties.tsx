@@ -395,13 +395,24 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
 
     removeCropOverlay();
     applyImageCrop(selectedObject, nextCrop, border.radius);
+    const croppedWidth = overlayRight - overlayLeft;
+    const croppedHeight = overlayBottom - overlayTop;
+    const originX = selectedObject.originX || "left";
+    const originY = selectedObject.originY || "top";
     selectedObject.set({
-      left: overlayLeft,
-      top: overlayTop,
-      scaleX: (overlayRight - overlayLeft) / nextCrop.width,
-      scaleY: (overlayBottom - overlayTop) / nextCrop.height,
+      left:
+        originX === "center"
+          ? overlayLeft + croppedWidth / 2
+          : overlayLeft,
+      top:
+        originY === "center"
+          ? overlayTop + croppedHeight / 2
+          : overlayTop,
+      scaleX: croppedWidth / nextCrop.width,
+      scaleY: croppedHeight / nextCrop.height,
     });
     selectedObject.setCoords();
+    (selectedObject as any)._syncMediaOverlay?.();
     selectedObject.canvas?.setActiveObject(selectedObject);
     selectedObject.canvas?.requestRenderAll();
     setCrop(nextCrop);
@@ -503,14 +514,24 @@ export function ImageProperties({ selectedObject }: ImagePropertiesProps) {
     removeCropOverlay();
     setCrop(null);
     applyImageCrop(selectedObject, null, border.radius);
+    const originX = selectedObject.originX || "left";
+    const originY = selectedObject.originY || "top";
     selectedObject.set({
-      left: bounds.left,
-      top: bounds.top,
+      left:
+        originX === "center"
+          ? bounds.left + bounds.width / 2
+          : bounds.left,
+      top:
+        originY === "center"
+          ? bounds.top + bounds.height / 2
+          : bounds.top,
       scaleX: bounds.width / Math.max(1, naturalSize.width),
       scaleY: bounds.height / Math.max(1, naturalSize.height),
     });
     selectedObject.setCoords();
+    (selectedObject as any)._syncMediaOverlay?.();
     selectedObject.canvas?.setActiveObject(selectedObject);
+    selectedObject.canvas?.requestRenderAll();
     saveLayerData({ crop: null });
     setCropMode(false);
     setWidth(Math.round(selectedObject.getScaledWidth()));

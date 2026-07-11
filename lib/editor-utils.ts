@@ -199,6 +199,15 @@ export const applyPersistedLayerState = (
     );
     applyBorder(object, layer.data.border || DEFAULT_BORDER);
     applyShadow(object, effects.shadow || DEFAULT_SHADOW);
+    if (
+      useEditorStore.getState().editorMode !== "video" &&
+      Number(object.opacity ?? 1) < 0.05
+    ) {
+      object.set({
+        opacity: Number(layer.data?.opacity ?? 1) || 1,
+        strokeWidth: 0,
+      });
+    }
   }
 
   object.setCoords();
@@ -776,7 +785,11 @@ export const addMediaFromUrl = async (
         liveCanvas,
         useEditorStore.getState().getLayers(),
       );
-      attachMediaOverlay(liveCanvas, fabricImg as any);
+      if (useEditorStore.getState().editorMode === "video") {
+        attachMediaOverlay(liveCanvas, fabricImg as any);
+      } else {
+        fabricImg.set({ visible: true, opacity: 1 });
+      }
 
       if (!silent) {
         requestAnimationFrame(() => {
@@ -788,14 +801,16 @@ export const addMediaFromUrl = async (
           liveCanvas,
           useEditorStore.getState().getLayers(),
         );
-        attachMediaOverlay(
-          liveCanvas,
-          fabricImg as any,
-          useEditorStore
-            .getState()
-            .getLayers()
-            .find((layer) => layer.objectId === objectId),
-        );
+        if (useEditorStore.getState().editorMode === "video") {
+          attachMediaOverlay(
+            liveCanvas,
+            fabricImg as any,
+            useEditorStore
+              .getState()
+              .getLayers()
+              .find((layer) => layer.objectId === objectId),
+          );
+        }
         requestAnimationFrame(() => {
           fabricImg.setCoords();
           (fabricImg as any)._syncMediaOverlay?.();

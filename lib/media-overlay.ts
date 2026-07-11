@@ -130,6 +130,26 @@ function ensureMediaOverlayElement(
   return null;
 }
 
+/** HTML media overlays are only for video composition; photo mode uses Fabric filters/crop. */
+export const shouldUseHtmlMediaOverlay = () =>
+  useEditorStore.getState().editorMode === "video";
+
+const restoreFabricVisibility = (object: MediaFabricObject) => {
+  const layerOpacity = Number(
+    useEditorStore
+      .getState()
+      .getLayers()
+      .find((candidate) => candidate.objectId === object.name)?.data?.opacity ??
+      1,
+  );
+  object.set({
+    opacity: Number.isFinite(layerOpacity) ? Math.min(1, Math.max(0, layerOpacity)) : 1,
+    stroke: undefined,
+    strokeWidth: 0,
+  });
+  object.setCoords();
+};
+
 export function syncMediaOverlay(
   object: MediaFabricObject,
   layer?: Layer,
@@ -137,6 +157,13 @@ export function syncMediaOverlay(
 ) {
   const canvas = object.canvas;
   if (!canvas || !isMediaOverlayObject(object)) return;
+
+  if (!shouldUseHtmlMediaOverlay()) {
+    object._mediaOverlayElement?.remove();
+    object._mediaOverlayElement = undefined;
+    restoreFabricVisibility(object);
+    return;
+  }
 
   const root = getMediaOverlayRoot(canvas);
   const element = ensureMediaOverlayElement(object, layer);
@@ -210,6 +237,16 @@ export function attachMediaOverlay(
 ) {
   if (!isMediaOverlayObject(object)) return;
 
+  if (!shouldUseHtmlMediaOverlay()) {
+    object._cleanupMediaOverlay?.();
+    object._mediaOverlayElement?.remove();
+    object._mediaOverlayElement = undefined;
+    object._syncMediaOverlay = undefined;
+    object._cleanupMediaOverlay = undefined;
+    restoreFabricVisibility(object);
+    return;
+  }
+
   const sync = () => {
     const currentLayer =
       layer ||
@@ -275,6 +312,26 @@ export function attachMediaOverlay(
 }
 
 export function syncMediaOverlays(canvas: Canvas, layers: Layer[]) {
+  if (!shouldUseHtmlMediaOverlay()) {
+    canvas.getObjects().forEach((object) => {
+      const mediaObject = object as MediaFabricObject;
+      if (!isMediaOverlayObject(mediaObject)) return;
+      mediaObject._cleanupMediaOverlay?.();
+      mediaObject._mediaOverlayElement?.remove();
+      mediaObject._mediaOverlayElement = undefined;
+      mediaObject._syncMediaOverlay = undefined;
+      mediaObject._cleanupMediaOverlay = undefined;
+      restoreFabricVisibility(mediaObject);
+    });
+    const wrapper = canvas.wrapperEl;
+    const host = wrapper?.parentElement;
+    const root = host?.querySelector(
+      `[${MEDIA_OVERLAY_ROOT_ATTRIBUTE}]`,
+    ) as HTMLDivElement | undefined;
+    root?.remove();
+    return;
+  }
+
   getMediaOverlayRoot(canvas);
 
   const overlayObjects = canvas

@@ -475,6 +475,13 @@ export const applyImagePreset = (
     ...buildPresetFilters(safePreset, presetIntensity),
   ];
   image.applyFilters();
+  // Photo mode must show the Fabric pixels (video mode uses HTML overlays).
+  if (
+    useEditorStore.getState().editorMode !== "video" &&
+    Number(image.opacity ?? 1) < 0.05
+  ) {
+    image.set({ opacity: 1, strokeWidth: 0 });
+  }
   image.canvas?.requestRenderAll();
 };
 
@@ -497,6 +504,13 @@ export const applyImageCrop = (
       width: crop.width,
       height: crop.height,
     });
+  }
+
+  if (
+    useEditorStore.getState().editorMode !== "video" &&
+    Number(image.opacity ?? 1) < 0.05
+  ) {
+    image.set({ opacity: 1, strokeWidth: 0 });
   }
 
   applyImageRadius(image, radius);
